@@ -1,0 +1,369 @@
+name: build-ggml.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: "CMake build type"
+        required: true
+        type: choice
+        default: "Release"
+        options:
+          - Release
+          - Debug
+      ggml_ref:
+        description: "SeasonRealms/ggml tag / branch / commit"
+        required: true
+        default: "master"
+      cuda_version:
+        description: "CUDA Toolkit version for the Windows build"
+        required: false
+        default: "12.8.1"
+      cuda_architectures:
+        description: "CUDA architectures for the Windows CMake build"
+        required: false
+        default: "75-virtual;80-real;86-real;89-real;90-virtual"
+      cudnn_redist_url:
+        description: "Optional cuDNN zip URL used when cudnn*.dll is not already present on the runner"
+        required: false
+        default: ""
+      build_parallel:
+        description: "Parallel build jobs"
+        required: false
+        default: "4"
+
+permissions:
+  contents: read
+
+env:
+  GGML_REPO: SeasonRealms/ggml
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout SeasonGGML repository
+        uses: actions/checkout@v4
+
+      - name: Checkout SeasonRealms/ggml
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GGML_REPO }}
+          ref: ${{ github.event.inputs.ggml_ref }}
+          path: ggml-src
+          submodules: recursive
+
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: "${{ github.event.inputs.cuda_version }}"
+
+      - name: Setup MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      - name: Configure CMake
+        shell: pwsh
+        working-directory: ggml-src
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          Set-Location build
+
+          $cmakeArgs = @(
+            '..',
+            '-G', 'Ninja',
+            '-DCMAKE_C_COMPILER=cl.exe',
+            '-DCMAKE_CXX_COMPILER=cl.exe',
+            "-DCMAKE_BUILD_TYPE=${{ github.event.inputs.configuration }}",
+            '-DCMAKE_CXX_FLAGS=/bigobj',
+            '-DBUILD_SHARED_LIBS=ON',
+            '-DGGML_BUILD_TESTS=OFF',
+            '-DGGML_BUILD_EXAMPLES=OFF',
+            '-DGGML_BACKEND_DL=ON',
+            '-DGGML_NATIVE=OFF',
+            '-DGGML_CPU_ALL_VARIANTS=ON',
+            '-DGGML_CUDA=ON',
+            '-DGGML_VULKAN=ON',
+            '-DGGML_CUDA_CUB_3DOT2=ON',
+            '-DCMAKE_CUDA_FLAGS=-Xcudafe "--diag_suppress=177" -Xcudafe "--diag_suppress=550"',
+            '-DCMAKE_CUDA_ARCHITECTURES=${{ github.event.inputs.cuda_architectures }}'
+          )
+
+          Write-Host "Running: cmake $($cmakeArgs -join ' ')"
+          & cmake @cmakeArgs
+
+      - name: Build
+        working-directory: ggml-src/build
+        shell: pwsh
+        run: |
+          cmake --build . --config "${{ github.event.inputs.configuration }}" --parallel "${{ github.event.inputs.build_parallel }}"
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $out = "out/runtimes/win-x64/native/multi-backend"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          Copy-Item ggml-src/LICENSE -Destination (Join-Path $out "ggml.txt") -Force
+
+          foreach ($header in @(
+            "ggml-src/include/ggml.h",
+            "ggml-src/include/ggml-backend.h",
+            "ggml-src/include/ggml-cpu.h"
+          )) {
+            if (Test-Path $header) {
+              Copy-Item $header -Destination $out -Force
+            }
+          }
+
+          Get-ChildItem ggml-src/build -Recurse -File -Filter "ggml*.dll" | ForEach-Object {
+            Copy-Item $_.FullName -Destination $out -Force
+          }
+
+          $requiredDlls = @(
+            "ggml.dll",
+            "ggml-base.dll",
+            "ggml-cuda.dll",
+            "ggml-vulkan.dll"
+          )
+
+          foreach ($name in $requiredDlls) {
+            if (-not (Test-Path (Join-Path $out $name))) {
+              throw "Required GGML runtime is missing: $name"
+            }
+          }
+
+          $cpuBackends = Get-ChildItem $out -File | Where-Object { $_.Name -like 'ggml-cpu*.dll' } | Sort-Object Name
+          if ($cpuBackends.Count -eq 0) {
+            throw "No CPU GGML backend variants were produced."
+          }
+
+          if (-not $env:CUDA_PATH) {
+            throw "CUDA_PATH is not set after installing CUDA Toolkit."
+          }
+
+          $cudaBin = Join-Path $env:CUDA_PATH "bin"
+          if (-not (Test-Path $cudaBin)) {
+            throw "CUDA bin directory not found: $cudaBin"
+          }
+
+          $cudaLib = Join-Path $env:CUDA_PATH "lib\x64"
+          $cudaSeries = ("${{ github.event.inputs.cuda_version }}" -split '\.')[0..1] -join "."
+          $searchRoots = @($cudaBin)
+          if (Test-Path $cudaLib) {
+            $searchRoots += $cudaLib
+          }
+
+          if ($env:CUDNN_PATH) {
+            foreach ($root in @(
+              (Join-Path $env:CUDNN_PATH "bin"),
+              (Join-Path $env:CUDNN_PATH "lib"),
+              (Join-Path $env:CUDNN_PATH "lib\x64")
+            )) {
+              if (Test-Path $root) {
+                $searchRoots += $root
+              }
+            }
+          }
+
+          function Copy-MatchingFiles {
+            param(
+              [string[]]$Roots,
+              [string[]]$Patterns,
+              [string]$Destination
+            )
+
+            $copied = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+            foreach ($root in $Roots) {
+              if (-not (Test-Path $root)) {
+                continue
+              }
+
+              foreach ($pattern in $Patterns) {
+                Get-ChildItem -Path $root -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue | ForEach-Object {
+                  $destPath = Join-Path $Destination $_.Name
+                  Copy-Item $_.FullName -Destination $destPath -Force
+                  $null = $copied.Add($_.Name)
+                }
+              }
+            }
+
+            return @($copied | Sort-Object)
+          }
+
+          function Get-LatestNvidiaRedistArchiveUrl {
+            param(
+              [string]$Component,
+              [string]$Series
+            )
+
+            $indexUrl = "https://developer.download.nvidia.com/compute/cuda/redist/$Component/windows-x86_64/"
+            $response = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
+            $escapedComponent = [regex]::Escape($Component)
+            $escapedSeries = [regex]::Escape($Series)
+            $regex = [regex]"$escapedComponent-windows-x86_64-($escapedSeries(?:\.\d+)+)-archive\.zip"
+
+            $archives = foreach ($match in $regex.Matches($response.Content)) {
+              [pscustomobject]@{
+                FileName = $match.Value
+                Version  = [version]$match.Groups[1].Value
+              }
+            }
+
+            $latest = $archives | Sort-Object Version -Descending | Select-Object -First 1
+            if ($null -eq $latest) {
+              return $null
+            }
+
+            return $indexUrl + $latest.FileName
+          }
+
+          function Ensure-ComponentDlls {
+            param(
+              [string]$Name,
+              [string[]]$Patterns,
+              [string]$RedistComponent,
+              [bool]$Required
+            )
+
+            $copied = Copy-MatchingFiles -Roots $searchRoots -Patterns $Patterns -Destination $out
+            if ($copied.Count -gt 0) {
+              Write-Host "$Name DLLs copied from installed toolkit: $($copied -join ', ')"
+              return
+            }
+
+            Write-Warning "No local DLLs found for $Name under: $($searchRoots -join '; ')"
+
+            if ([string]::IsNullOrWhiteSpace($RedistComponent)) {
+              if ($Required) {
+                throw "Missing required CUDA DLLs for component '$Name'."
+              }
+              return
+            }
+
+            $archiveUrl = Get-LatestNvidiaRedistArchiveUrl -Component $RedistComponent -Series $cudaSeries
+            if ([string]::IsNullOrWhiteSpace($archiveUrl)) {
+              if ($Required) {
+                throw "No NVIDIA redist archive found for component '$RedistComponent' in CUDA series $cudaSeries."
+              }
+              Write-Warning "No NVIDIA redist archive found for optional component '$RedistComponent' in CUDA series $cudaSeries."
+              return
+            }
+
+            $downloadRoot = Join-Path $env:RUNNER_TEMP "cuda-redist"
+            $extractRoot = Join-Path $downloadRoot "extract-$Name"
+            New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
+            if (Test-Path $extractRoot) {
+              Remove-Item -Path $extractRoot -Recurse -Force
+            }
+
+            $archiveName = Split-Path $archiveUrl -Leaf
+            $archivePath = Join-Path $downloadRoot $archiveName
+            Write-Host "Downloading fallback redist for ${Name}: $archiveUrl"
+            Invoke-WebRequest -Uri $archiveUrl -OutFile $archivePath -UseBasicParsing
+            Expand-Archive -Path $archivePath -DestinationPath $extractRoot -Force
+
+            $copied = Copy-MatchingFiles -Roots @($extractRoot) -Patterns $Patterns -Destination $out
+            if ($copied.Count -gt 0) {
+              Write-Host "$Name DLLs copied from NVIDIA redist: $($copied -join ', ')"
+              return
+            }
+
+            if ($Required) {
+              throw "Missing required CUDA DLLs for component '$Name' even after downloading NVIDIA redist archive '$archiveName'."
+            }
+
+            Write-Warning "Optional component '$Name' was not found even after downloading NVIDIA redist archive '$archiveName'."
+          }
+
+          function Ensure-OptionalArchiveDlls {
+            param(
+              [string]$Name,
+              [string[]]$Patterns,
+              [string]$ArchiveUrl
+            )
+
+            $copied = Copy-MatchingFiles -Roots $searchRoots -Patterns $Patterns -Destination $out
+            if ($copied.Count -gt 0) {
+              Write-Host "$Name DLLs copied from local search roots: $($copied -join ', ')"
+              return
+            }
+
+            if ([string]::IsNullOrWhiteSpace($ArchiveUrl)) {
+              Write-Warning "$Name DLLs were not found locally and no archive URL was provided."
+              return
+            }
+
+            $downloadRoot = Join-Path $env:RUNNER_TEMP "optional-redist"
+            $extractRoot = Join-Path $downloadRoot "extract-$Name"
+            New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
+            if (Test-Path $extractRoot) {
+              Remove-Item -Path $extractRoot -Recurse -Force
+            }
+
+            $archiveName = Split-Path $ArchiveUrl -Leaf
+            $archivePath = Join-Path $downloadRoot $archiveName
+            Write-Host "Downloading optional archive for ${Name}: $ArchiveUrl"
+            Invoke-WebRequest -Uri $ArchiveUrl -OutFile $archivePath -UseBasicParsing
+
+            if ($archiveName.EndsWith(".zip", [System.StringComparison]::OrdinalIgnoreCase)) {
+              Expand-Archive -Path $archivePath -DestinationPath $extractRoot -Force
+            } else {
+              throw "Optional archive for '$Name' must be a zip file: $archiveName"
+            }
+
+            $copied = Copy-MatchingFiles -Roots @($extractRoot) -Patterns $Patterns -Destination $out
+            if ($copied.Count -gt 0) {
+              Write-Host "$Name DLLs copied from optional archive: $($copied -join ', ')"
+              return
+            }
+
+            Write-Warning "$Name DLLs were not found in the provided archive: $archiveName"
+          }
+
+          Ensure-ComponentDlls -Name "cudart" -Patterns @("cudart64_*.dll", "cudart*.dll") -RedistComponent "cuda_cudart" -Required $true
+          Ensure-ComponentDlls -Name "cublas" -Patterns @("cublas64_*.dll", "cublas*.dll", "cublasLt64_*.dll", "cublasLt*.dll") -RedistComponent "libcublas" -Required $true
+          Ensure-ComponentDlls -Name "cufft" -Patterns @("cufft64_*.dll", "cufft*.dll") -RedistComponent "libcufft" -Required $false
+          Ensure-ComponentDlls -Name "curand" -Patterns @("curand64_*.dll", "curand*.dll") -RedistComponent "libcurand" -Required $false
+          Ensure-ComponentDlls -Name "cusparse" -Patterns @("cusparse64_*.dll", "cusparse*.dll") -RedistComponent "libcusparse" -Required $false
+          Ensure-ComponentDlls -Name "nvJitLink" -Patterns @("nvJitLink_*.dll", "nvJitLink*.dll") -RedistComponent "libnvjitlink" -Required $false
+          Ensure-ComponentDlls -Name "nvrtc" -Patterns @("nvrtc64_*.dll", "nvrtc*.dll") -RedistComponent "cuda_nvrtc" -Required $false
+          Ensure-OptionalArchiveDlls -Name "cudnn" -Patterns @("cudnn*.dll") -ArchiveUrl "${{ github.event.inputs.cudnn_redist_url }}"
+
+          $manifest = Join-Path $out "README.txt"
+          @(
+            "GGML_REPO: https://github.com/${{ env.GGML_REPO }}",
+            "GGML_REF: ${{ github.event.inputs.ggml_ref }}",
+            "Configuration: ${{ github.event.inputs.configuration }}",
+            "CUDA Toolkit version: ${{ github.event.inputs.cuda_version }}",
+            "Enabled backends: cpu-all-variants, cuda12, vulkan",
+            "",
+            "This build packages standalone ggml shared libraries for win-x64.",
+            "CPU uses GGML_CPU_ALL_VARIANTS with GGML_BACKEND_DL so one runtime can expose multiple x86 CPU variants and let ggml choose the best supported backend at runtime.",
+            "",
+            "CPU backend DLLs:"
+          ) | Set-Content -Path $manifest -Encoding ascii
+
+          $cpuBackends | ForEach-Object {
+            Add-Content -Path $manifest -Value $_.Name -Encoding ascii
+          }
+
+          Add-Content -Path $manifest -Value "" -Encoding ascii
+          Add-Content -Path $manifest -Value "Artifact contents:" -Encoding ascii
+          Get-ChildItem $out -File | Sort-Object Name | ForEach-Object {
+            Add-Content -Path $manifest -Value $_.Name -Encoding ascii
+          }
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ggml-win-x64-multi-backend-${{ github.event.inputs.configuration }}
+          path: out/runtimes/win-x64/native/multi-backend/
+          if-no-files-found: error
