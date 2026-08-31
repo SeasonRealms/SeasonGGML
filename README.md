@@ -3,6 +3,8 @@
 `SeasonGGML` provides shared GGML native dependencies and backend enumeration helpers for
 `SeasonLLM`, `SeasonImage`, `SeasonTTS`, and other SeasonEngine projects.
 
+https://github.com/SeasonRealms/SeasonGGML
+
 ## Backend Enumeration
 
 ```csharp

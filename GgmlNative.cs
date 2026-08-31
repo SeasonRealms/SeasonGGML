@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 // https://github.com/SeasonRealms/SeasonGGML
 
-namespace SeasonGGML;
+namespace Season.GGML;
 
 internal static class GgmlNative
 {

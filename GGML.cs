@@ -2,11 +2,7 @@
 // Licensed under the MIT License.
 // https://github.com/SeasonRealms/SeasonGGML
 
-using System.Globalization;
-using System.Reflection;
-using System.Runtime.InteropServices;
-
-namespace SeasonGGML;
+namespace Season.GGML;
 
 public static class GGML
 {
