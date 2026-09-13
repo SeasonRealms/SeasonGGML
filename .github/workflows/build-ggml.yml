@@ -602,6 +602,12 @@ jobs:
             exit 1
           fi
 
+          # Record the artifact checksum so the dylib can be verified after download.
+          # Transferring the binary through text-mode channels (sync tools, text editors,
+          # some file shares) corrupts the Mach-O header into UTF-8 replacement characters;
+          # this is how a downstream user detects that before it reaches a device.
+          libsha256=$(shasum -a 256 "$out/libggml.dylib" | awk '{print $1}')
+
           manifest="$out/README.txt"
           {
             echo "GGML_REPO: https://github.com/${{ env.GGML_REPO }}"
@@ -622,6 +628,7 @@ jobs:
             echo "Metal targets the Apple Silicon unified-memory GPU only; Intel integrated and AMD discrete GPUs are out of scope for this artifact."
             echo "CUDA and Vulkan are unavailable on Mac Catalyst and are explicitly disabled."
             echo ""
+            echo "libggml.dylib sha256: ${libsha256}"
             echo "Artifact contents:"
             (cd "$out" && ls | sort)
           } > "$manifest"
