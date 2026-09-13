@@ -27,6 +27,18 @@ on:
         description: "Optional cuDNN zip URL used when cudnn*.dll is not already present on the runner"
         required: false
         default: ""
+      maccatalyst_min_ios:
+        description: "Mac Catalyst deployment target (iOS version used in the *-macabi triple)"
+        required: false
+        default: "15.0"
+      maccatalyst_blas:
+        description: "Build the Accelerate-backed BLAS backend for Mac Catalyst"
+        required: false
+        type: choice
+        default: "ON"
+        options:
+          - ON
+          - OFF
       build_parallel:
         description: "Parallel build jobs"
         required: false
@@ -370,3 +382,221 @@ jobs:
           name: ggml-win-x64-multi-backend-${{ github.event.inputs.configuration }}
           path: out/runtimes/win-x64/native/multi-backend/
           if-no-files-found: error
+
+  build-maccatalyst:
+    # Apple Silicon only: macos-15 is already arm64, so this is a native build.
+    # Intel Macs (x86_64 / maccatalyst-x64) are deliberately not produced - see the
+    # generated README.txt for what that costs.
+    runs-on: macos-15
+    timeout-minutes: 180
+
+    env:
+      RID: maccatalyst-arm64
+      ARCH: arm64
+
+    steps:
+      - name: Checkout SeasonGGML repository
+        uses: actions/checkout@v4
+
+      - name: Checkout SeasonRealms/ggml
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GGML_REPO }}
+          ref: ${{ github.event.inputs.ggml_ref }}
+          path: ggml-src
+          submodules: recursive
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install Ninja
+        run: |
+          if ! command -v ninja >/dev/null 2>&1; then
+            brew install ninja
+          fi
+          ninja --version
+
+      - name: Configure CMake
+        working-directory: ggml-src
+        env:
+          MIN_IOS: ${{ github.event.inputs.maccatalyst_min_ios }}
+          ENABLE_BLAS: ${{ github.event.inputs.maccatalyst_blas }}
+        run: |
+          set -euo pipefail
+
+          # Mac Catalyst is not a CMAKE_SYSTEM_NAME. The supported way to target it
+          # is: keep the Darwin/macOS SDK and switch the clang target triple to
+          # <arch>-apple-ios<ver>-macabi. CMAKE_OSX_DEPLOYMENT_TARGET must stay empty,
+          # otherwise CMake injects -mmacosx-version-min=, which conflicts with -target.
+          SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+          TRIPLE="${ARCH}-apple-ios${MIN_IOS}-macabi"
+
+          # ggml_get_system_arch() compares CMAKE_OSX_ARCHITECTURES with STREQUAL, so
+          # it must hold exactly "arm64" for the Apple ARM variant set (apple_m1 /
+          # apple_m2_m3 / apple_m4) to be selected. A universal arm64;x86_64 value would
+          # not match and would fall back to the host CMAKE_SYSTEM_PROCESSOR.
+          CAT_FLAGS="-target ${TRIPLE}"
+          CAT_FLAGS="${CAT_FLAGS} -isystem ${SDK_PATH}/System/iOSSupport/usr/include"
+          CAT_FLAGS="${CAT_FLAGS} -iframework ${SDK_PATH}/System/iOSSupport/System/Library/Frameworks"
+
+          LINK_FLAGS="-target ${TRIPLE}"
+          LINK_FLAGS="${LINK_FLAGS} -L${SDK_PATH}/System/iOSSupport/usr/lib"
+          LINK_FLAGS="${LINK_FLAGS} -F${SDK_PATH}/System/iOSSupport/System/Library/Frameworks"
+
+          BUILD_DIR="${PWD}/build"
+
+          cmake -S . -B "${BUILD_DIR}" -G Ninja \
+            -DCMAKE_BUILD_TYPE="${{ github.event.inputs.configuration }}" \
+            -DCMAKE_OSX_SYSROOT="${SDK_PATH}" \
+            -DCMAKE_OSX_ARCHITECTURES="${ARCH}" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET= \
+            -DCMAKE_C_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=128" \
+            -DCMAKE_CXX_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=128" \
+            -DCMAKE_OBJC_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=128" \
+            -DCMAKE_OBJCXX_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=128" \
+            -DCMAKE_ASM_FLAGS="${CAT_FLAGS}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${LINK_FLAGS}" \
+            -DCMAKE_SHARED_LINKER_FLAGS="${LINK_FLAGS}" \
+            -DCMAKE_MODULE_LINKER_FLAGS="${LINK_FLAGS}" \
+            -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="${BUILD_DIR}/bin" \
+            -DCMAKE_INSTALL_NAME_DIR=@rpath \
+            -DCMAKE_BUILD_WITH_INSTALL_NAME_DIR=ON \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_INSTALL_RPATH=@loader_path \
+            -DBUILD_SHARED_LIBS=ON \
+            -DGGML_BUILD_TESTS=OFF \
+            -DGGML_BUILD_EXAMPLES=OFF \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU=ON \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_ACCELERATE=ON \
+            -DGGML_METAL=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DGGML_METAL_NDEBUG=ON \
+            -DGGML_BLAS="${ENABLE_BLAS}" \
+            -DGGML_BLAS_VENDOR=Apple \
+            -DGGML_OPENMP=OFF \
+            -DGGML_CUDA=OFF \
+            -DGGML_VULKAN=OFF
+
+      - name: Build
+        working-directory: ggml-src
+        run: |
+          set -euo pipefail
+          cmake --build build --parallel "${{ github.event.inputs.build_parallel }}"
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+
+          out="out/runtimes/${RID}/native/multi-backend"
+          mkdir -p "$out"
+
+          cp ggml-src/LICENSE "$out/ggml.txt"
+
+          for header in ggml.h ggml-backend.h ggml-cpu.h ggml-metal.h ggml-blas.h; do
+            if [ -f "ggml-src/include/${header}" ]; then
+              cp "ggml-src/include/${header}" "$out/"
+            fi
+          done
+
+          # ggml/ggml-base are SHARED libraries carrying VERSION/SOVERSION, so CMake
+          # emits libggml.<ver>.dylib plus libggml.dylib / libggml.0.dylib symlinks.
+          # cp -L materialises every name as a real file: .NET probes libggml.dylib
+          # while the recorded install_name is @rpath/libggml.0.dylib, so both must exist.
+          # GGML_BACKEND_DL backends are CMake MODULE targets, which use the .so suffix
+          # on Apple - that matches backend_filename_extension() in ggml-backend-reg.cpp.
+          find ggml-src/build \( -name 'libggml*.dylib' -o -name 'libggml*.so' \) | while IFS= read -r lib; do
+            cp -L "$lib" "$out/$(basename "$lib")"
+          done
+
+          for name in libggml.dylib libggml-base.dylib libggml-metal.so; do
+            if [ ! -f "$out/$name" ]; then
+              echo "Required GGML runtime is missing: $name" >&2
+              exit 1
+            fi
+          done
+
+          cpuBackends=$(cd "$out" && ls libggml-cpu-*.so 2>/dev/null | sort || true)
+          if [ -z "$cpuBackends" ]; then
+            echo "No CPU GGML backend variants were produced." >&2
+            exit 1
+          fi
+
+          # Every CPU module must be an Apple Silicon variant (apple_m1 / apple_m2_m3 /
+          # apple_m4). Anything else means ggml_get_system_arch() did not resolve to ARM
+          # and the x86 variant set was built instead.
+          for cpu in $cpuBackends; do
+            case "$cpu" in
+              libggml-cpu-apple_*.so) ;;
+              *)
+                echo "Unexpected non-Apple-Silicon CPU backend: $cpu" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          if [ -f "$out/libggml-blas.so" ]; then
+            blasState="libggml-blas.so (Accelerate)"
+          else
+            blasState="not built"
+            echo "::warning::BLAS backend was not produced for ${RID}"
+          fi
+
+          # Fail loudly if anything was accidentally built for plain macOS, for Intel,
+          # or as a fat binary - such a library loads on the runner but not in the app.
+          for lib in "$out"/*.dylib "$out"/*.so; do
+            archInfo="$(lipo -info "$lib")"
+            if ! echo "$archInfo" | grep -q "${ARCH}"; then
+              echo "Missing ${ARCH} slice in $lib: $archInfo" >&2
+              exit 1
+            fi
+            if echo "$archInfo" | grep -q 'x86_64\|i386'; then
+              echo "Unexpected Intel slice in $lib: $archInfo" >&2
+              exit 1
+            fi
+            if ! xcrun vtool -show-build-version "$lib" | grep -q "MACCATALYST"; then
+              echo "Not built for Mac Catalyst: $lib" >&2
+              xcrun vtool -show-build-version "$lib" >&2
+              exit 1
+            fi
+          done
+
+          manifest="$out/README.txt"
+          {
+            echo "GGML_REPO: https://github.com/${{ env.GGML_REPO }}"
+            echo "GGML_REF: ${{ github.event.inputs.ggml_ref }}"
+            echo "Configuration: ${{ github.event.inputs.configuration }}"
+            echo "RID: ${RID}"
+            echo "Target triple: ${ARCH}-apple-ios${{ github.event.inputs.maccatalyst_min_ios }}-macabi"
+            echo "GGML_MAX_NAME: 128"
+            echo "Enabled backends: cpu-all-variants, metal, blas"
+            echo "BLAS: ${blasState}"
+            echo ""
+            echo "This build packages standalone ggml shared libraries for ${RID}."
+            echo "Apple Silicon only: no x86_64 slice is produced, so this runtime does not load on Intel Macs. Add a maccatalyst-x64 build if Intel support is needed again."
+            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=128 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
+            echo "CPU uses GGML_CPU_ALL_VARIANTS with GGML_BACKEND_DL so one runtime can expose the apple_m1 / apple_m2_m3 / apple_m4 variants and let ggml choose the best supported backend at runtime."
+            echo "Metal uses GGML_METAL_EMBED_LIBRARY so the shader source travels inside libggml-metal.so; no default.metallib has to be deployed or located in the app bundle."
+            echo "Metal targets the Apple Silicon unified-memory GPU only; Intel integrated and AMD discrete GPUs are out of scope for this artifact."
+            echo "CUDA and Vulkan are unavailable on Mac Catalyst and are explicitly disabled."
+            echo ""
+            echo "CPU backend modules:"
+            echo "$cpuBackends"
+            echo ""
+            echo "Artifact contents:"
+            (cd "$out" && ls | sort)
+          } > "$manifest"
+
+          cat "$manifest"
+
+      - name: Upload Mac Catalyst artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ggml-${{ env.RID }}-multi-backend-${{ github.event.inputs.configuration }}
+          path: out/runtimes/${{ env.RID }}/native/multi-backend/
+          if-no-files-found: error
+
