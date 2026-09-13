@@ -546,8 +546,13 @@ jobs:
 
           # The merged dylib must export the entry points SeasonGGML P/Invokes; a dropped
           # backend object or an unresolved symbol shows up as a missing export here.
+          # Read nm once into a variable and match with a here-string: piping nm into
+          # grep -q lets grep close the pipe on the first match, which makes llvm-nm abort
+          # with "Broken pipe" and, under set -o pipefail, fails the whole pipeline even
+          # though the symbol was found.
+          nmOut="$(nm -gU build/merged/libggml.dylib)"
           for sym in _ggml_backend_dev_count _ggml_backend_reg_count; do
-            if ! nm -gU build/merged/libggml.dylib | grep -q " ${sym}$"; then
+            if ! grep -q " ${sym}$" <<< "$nmOut"; then
               echo "Merged dylib does not export ${sym}" >&2
               exit 1
             fi
