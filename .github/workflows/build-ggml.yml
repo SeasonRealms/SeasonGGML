@@ -39,6 +39,14 @@ on:
         options:
           - ON
           - OFF
+      build_target:
+        description: "Platform to build (one job per run)"
+        required: true
+        type: choice
+        default: "maccatalyst"
+        options:
+          - maccatalyst
+          - windows
       build_parallel:
         description: "Parallel build jobs"
         required: false
@@ -52,6 +60,7 @@ env:
 
 jobs:
   build-windows:
+    if: github.event.inputs.build_target == 'windows'
     runs-on: windows-2022
     timeout-minutes: 240
 
@@ -384,6 +393,9 @@ jobs:
           if-no-files-found: error
 
   build-maccatalyst:
+    # Runs only when build_target is maccatalyst; build-windows is gated the same way,
+    # so exactly one build job executes per workflow run.
+    if: github.event.inputs.build_target == 'maccatalyst'
     # Apple Silicon only: macos-15 is already arm64, so this is a native build.
     # Intel Macs (x86_64 / maccatalyst-x64) are deliberately not produced - see the
     # generated README.txt for what that costs.
