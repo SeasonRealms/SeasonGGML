@@ -7,9 +7,14 @@ namespace Season.GGML;
 public static class GGML
 {
     private static readonly object s_loadLock = new();
+    private static readonly object s_resolverLock = new();
+    private static readonly Dictionary<string, IntPtr> s_nativeHandles = new(StringComparer.Ordinal);
     private static bool s_backendsLoaded;
+    private static bool s_resolverRegistered;
 
-    public static bool IsSupported => OperatingSystem.IsWindows();
+    public static bool IsSupported =>
+        OperatingSystem.IsWindows() ||
+        (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64);
 
     public static GgmlBackendInfo[] GetAvailableBackends()
     {
@@ -181,16 +186,28 @@ public static class GGML
             CompiledTopTier: compiledTopTier,
             SystemTopTier: systemTopTier,
             EffectiveTopTier: effectiveTopTier,
-            Notes: "CPU backend features are queried via ggml.dll's backend registry. In a dynamic setup, the actual feature provider is implemented by ggml-cpu and exposed through the CPU registry.");
+            Notes: "CPU backend features are queried via the ggml runtime's backend registry. On Mac Catalyst the CPU backend is statically linked into libggml.dylib; on Windows it is provided by the ggml-cpu module. Either way the features are exposed through the CPU registry.");
     }
 
     internal static void EnsureSupported()
     {
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacCatalyst())
         {
             throw new PlatformNotSupportedException(
-                "SeasonGGML currently ships GGML native binaries only for Windows.");
+                "SeasonGGML currently ships GGML native binaries only for Windows and Mac Catalyst (Apple Silicon).");
         }
+
+        // The Mac Catalyst artifact is a pure arm64 slice, so on an Intel Mac - or under
+        // Rosetta - the dylib cannot even be opened. Report that reason instead of
+        // letting the first P/Invoke surface a bare DllNotFoundException.
+        if (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
+        {
+            throw new PlatformNotSupportedException(
+                "SeasonGGML ships Mac Catalyst GGML native binaries for Apple Silicon (arm64) only; " +
+                $"this process runs as {RuntimeInformation.ProcessArchitecture}.");
+        }
+
+        EnsureResolverRegistered();
     }
 
     private static void EnsureBackendsLoaded()
@@ -207,20 +224,165 @@ public static class GGML
                 return;
             }
 
-            var baseDirectory = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var baseDirectoryPtr = Marshal.StringToCoTaskMemUTF8(baseDirectory);
+            // Mac Catalyst ships a fully static runtime: CPU, Metal and BLAS are compiled
+            // into libggml.dylib and registered by ggml's backend registry on first use.
+            // There are no loadable .so modules to discover, so directory probing is a
+            // no-op and is skipped.
+            if (OperatingSystem.IsMacCatalyst())
+            {
+                s_backendsLoaded = true;
+                return;
+            }
+
+            // Probing several directories is safe: ggml keys its registry off the
+            // backend's reg pointer and dlopen/LoadLibrary is reference counted, so the
+            // same module cannot be registered twice.
+            foreach (var directory in EnumerateNativeSearchDirectories())
+            {
+                if (!Directory.Exists(directory))
+                {
+                    continue;
+                }
+
+                var directoryPtr = Marshal.StringToCoTaskMemUTF8(directory);
+                try
+                {
+                    GgmlNative.ggml_backend_load_all_from_path(directoryPtr);
+                }
+                finally
+                {
+                    Marshal.FreeCoTaskMem(directoryPtr);
+                }
+            }
+
+            // Finally let ggml apply its own defaults (executable directory + cwd).
+            GgmlNative.ggml_backend_load_all();
+            s_backendsLoaded = true;
+        }
+    }
+
+    /// <summary>
+    /// Registers the resolver that maps <c>ggml</c> / <c>ggml-base</c> onto an absolute
+    /// path. A ProjectReference consumer gets no <c>.deps.json</c> entry for these files,
+    /// so .NET would not probe <c>runtimes/&lt;rid&gt;/native/</c> for them on its own.
+    /// </summary>
+    private static void EnsureResolverRegistered()
+    {
+        if (s_resolverRegistered)
+        {
+            return;
+        }
+
+        lock (s_resolverLock)
+        {
+            if (s_resolverRegistered)
+            {
+                return;
+            }
 
             try
             {
-                GgmlNative.ggml_backend_load_all_from_path(baseDirectoryPtr);
-                GgmlNative.ggml_backend_load_all();
-                s_backendsLoaded = true;
+                NativeLibrary.SetDllImportResolver(typeof(GGML).Assembly, ResolveNativeLibrary);
             }
-            finally
+            catch (InvalidOperationException)
             {
-                Marshal.FreeCoTaskMem(baseDirectoryPtr);
+                // A host already installed a resolver for this assembly; let its probing win.
+            }
+
+            s_resolverRegistered = true;
+        }
+    }
+
+    private static IntPtr ResolveNativeLibrary(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
+    {
+        if (libraryName is not (GgmlNative.LibraryName or GgmlNative.BaseLibraryName))
+        {
+            return IntPtr.Zero;
+        }
+
+        lock (s_resolverLock)
+        {
+            if (s_nativeHandles.TryGetValue(libraryName, out var cached) && cached != IntPtr.Zero)
+            {
+                return cached;
+            }
+
+            var fileName = GetNativeFileName(libraryName);
+            foreach (var directory in EnumerateNativeSearchDirectories())
+            {
+                var candidate = Path.Combine(directory, fileName);
+                if (File.Exists(candidate) &&
+                    NativeLibrary.TryLoad(candidate, assembly, searchPath, out var handle))
+                {
+                    s_nativeHandles[libraryName] = handle;
+                    return handle;
+                }
             }
         }
+
+        // Fall through to the default .NET probing, which is what Windows relies on today.
+        return IntPtr.Zero;
+    }
+
+    private static string GetNativeFileName(string libraryName) =>
+        OperatingSystem.IsWindows()
+            ? $"{libraryName}.dll"
+            // Mac Catalyst ships a single statically-linked runtime: ggml, ggml-base and
+            // every backend are merged into one libggml.dylib, so both P/Invoke names
+            // ("ggml" and "ggml-base") resolve to the same file.
+            : "libggml.dylib";
+
+    private static IEnumerable<string> EnumerateNativeSearchDirectories()
+    {
+        var baseDirectory = AppContext.BaseDirectory;
+        if (string.IsNullOrEmpty(baseDirectory))
+        {
+            yield break;
+        }
+
+        baseDirectory = Path.TrimEndingDirectorySeparator(baseDirectory);
+
+        // 1. Next to the managed assemblies. On Windows that is the output root; on Mac
+        //    Catalyst it is <App>.app/Contents/MonoBundle.
+        yield return baseDirectory;
+
+        // 2. The RID layout preserved by the NuGet package.
+        var rid = GetNativeRuntimeIdentifier();
+        if (rid is not null)
+        {
+            yield return Path.Combine(baseDirectory, "runtimes", rid, "native");
+        }
+
+        // 3. Mac Catalyst packaging puts MSBuild Content under Contents/Resources rather
+        //    than next to the assemblies, so the bundle sibling has to be probed too.
+        if (OperatingSystem.IsMacCatalyst() && Path.GetDirectoryName(baseDirectory) is { } contents)
+        {
+            yield return Path.Combine(contents, "Resources");
+        }
+    }
+
+    private static string? GetNativeRuntimeIdentifier()
+    {
+        var arch = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.X64 => "x64",
+            Architecture.Arm64 => "arm64",
+            _ => null,
+        };
+
+        if (arch is null)
+        {
+            return null;
+        }
+
+        // IsMacCatalyst has to be tested before anything else: OperatingSystem.IsIOS()
+        // also reports true on Mac Catalyst.
+        if (OperatingSystem.IsMacCatalyst())
+        {
+            return $"maccatalyst-{arch}";
+        }
+
+        return OperatingSystem.IsWindows() ? $"win-{arch}" : null;
     }
 
     private static (IntPtr Handle, string Name)? FindBackendRegistry(string registryName)

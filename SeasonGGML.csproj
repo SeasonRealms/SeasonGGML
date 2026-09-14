@@ -49,11 +49,34 @@
 	<ItemGroup>
 		<None Include="README.md" Pack="true" PackagePath="\" />
 		<None Include="runtimes\win-x64\native\*" Pack="true" PackagePath="runtimes/win-x64/native/" Condition="Exists('runtimes\win-x64\native')" />
+		<None Include="runtimes\maccatalyst-arm64\native\*" Pack="true" PackagePath="runtimes/maccatalyst-arm64/native/" Condition="Exists('runtimes\maccatalyst-arm64\native')" />
 	</ItemGroup>
 
 	<!-- Windows: copy DLLs directly to output root (next to the .exe/.dll) -->
 	<ItemGroup Condition="'$(IsWindows)' == 'true'">
 		<Content Include="runtimes\win-x64\native\*" Condition="Exists('runtimes\win-x64\native')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<Link>%(Filename)%(Extension)</Link>
+			<Pack>false</Pack>
+		</Content>
+	</ItemGroup>
+
+	<!--
+	  Mac Catalyst: Apple Silicon only, no x86_64 slice is produced.
+	  The runtime is statically linked (BUILD_SHARED_LIBS=OFF, GGML_BACKEND_DL=OFF) and
+	  merged into a single libggml.dylib carrying CPU, Metal and BLAS - there are no
+	  libggml-*.so backend modules and nothing is dlopen'd, so the bundle has one Mach-O
+	  to sign. .NET P/Invokes both "ggml" and "ggml-base"; GGML.cs's resolver maps both
+	  names to this one file. Catalyst packaging places Content under Contents/Resources
+	  rather than next to the assemblies in Contents/MonoBundle, so GGML.cs probes both.
+	-->
+	<!--
+	  Only the dylib itself is Content: the folder also holds .h headers, ggml.txt and README.txt,
+	  which have no place in an app bundle (and the Apple SDK warns it cannot compute a
+	  PublishFolderType for them).
+	-->
+	<ItemGroup Condition="'$(IsMacCatalyst)' == 'true'">
+		<Content Include="runtimes\maccatalyst-arm64\native\libggml.dylib" Condition="Exists('runtimes\maccatalyst-arm64\native\libggml.dylib')">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<Link>%(Filename)%(Extension)</Link>
 			<Pack>false</Pack>
