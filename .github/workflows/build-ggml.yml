@@ -39,6 +39,18 @@ on:
         options:
           - ON
           - OFF
+      ios_deployment_target:
+        description: "iOS deployment target for the device and simulator builds (forms the arm64-apple-ios<ver> triples)"
+        required: false
+        default: "17.0"
+      ios_blas:
+        description: "Build the Accelerate-backed BLAS backend for iOS"
+        required: false
+        type: choice
+        default: "ON"
+        options:
+          - ON
+          - OFF
       build_target:
         description: "Platform to build (one job per run)"
         required: true
@@ -46,6 +58,7 @@ on:
         default: "maccatalyst"
         options:
           - maccatalyst
+          - ios
           - windows
       build_parallel:
         description: "Parallel build jobs"
@@ -393,8 +406,8 @@ jobs:
           if-no-files-found: error
 
   build-maccatalyst:
-    # Runs only when build_target is maccatalyst; build-windows is gated the same way,
-    # so exactly one build job executes per workflow run.
+    # Runs only when build_target is maccatalyst; every other build job is gated the
+    # same way, so exactly one build job executes per workflow run.
     if: github.event.inputs.build_target == 'maccatalyst'
     # Apple Silicon only: macos-15 is already arm64, so this is a native build.
     # Intel Macs (x86_64 / maccatalyst-x64) are deliberately not produced - see the
@@ -636,6 +649,309 @@ jobs:
           cat "$manifest"
 
       - name: Upload Mac Catalyst artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ggml-${{ env.RID }}-multi-backend-${{ github.event.inputs.configuration }}
+          path: out/runtimes/${{ env.RID }}/native/multi-backend/
+          if-no-files-found: error
+
+  build-ios:
+    # Runs only when build_target is ios; every other build job is gated the same
+    # way, so exactly one build job executes per workflow run.
+    if: github.event.inputs.build_target == 'ios'
+    # Apple Silicon only (same policy as the Mac Catalyst job): macos-15 is already
+    # arm64, so both slices are native builds. A single "arm64" iOS target does NOT
+    # also cover the simulator - device and simulator are distinct Mach-O platforms
+    # (LC_BUILD_VERSION reports IOS vs IOSSIMULATOR) built against different SDKs, so
+    # each needs its own compile. With Intel Macs out of scope the complete matrix is
+    # exactly two slices: device arm64 + simulator arm64; no x86_64 simulator slice is
+    # produced.
+    runs-on: macos-15
+    timeout-minutes: 240
+
+    env:
+      RID: ios-arm64
+      ARCH: arm64
+      MIN_IOS: ${{ github.event.inputs.ios_deployment_target }}
+      ENABLE_BLAS: ${{ github.event.inputs.ios_blas }}
+
+    steps:
+      - name: Checkout SeasonGGML repository
+        uses: actions/checkout@v4
+
+      - name: Checkout SeasonRealms/ggml
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GGML_REPO }}
+          ref: ${{ github.event.inputs.ggml_ref }}
+          path: ggml-src
+          submodules: recursive
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install Ninja
+        run: |
+          if ! command -v ninja >/dev/null 2>&1; then
+            brew install ninja
+          fi
+          ninja --version
+
+      - name: Configure + build (iOS device arm64)
+        working-directory: ggml-src
+        run: |
+          set -euo pipefail
+
+          # CMAKE_SYSTEM_NAME=iOS is CMake's first-class iOS cross-compilation mode:
+          # it selects the iphoneos SDK, the -mios-version-min flag and the arm64
+          # target triple, so no manual -target/-isysroot flags are needed (unlike the
+          # *-macabi build above, for which CMake has no system name to switch on).
+          # The behavioral flags mirror the Mac Catalyst job: one static, registry-
+          # driven runtime with CPU (M1 baseline), Metal and optional Accelerate BLAS,
+          # plus the same GGML_MAX_NAME=128 override.
+          cmake -S . -B build-ios-device -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphoneos \
+            -DCMAKE_OSX_ARCHITECTURES="${ARCH}" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${MIN_IOS}" \
+            -DCMAKE_BUILD_TYPE="${{ github.event.inputs.configuration }}" \
+            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_OBJC_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_OBJCXX_FLAGS="-DGGML_MAX_NAME=128" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_BUILD_TESTS=OFF \
+            -DGGML_BUILD_EXAMPLES=OFF \
+            -DGGML_BACKEND_DL=OFF \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU=ON \
+            -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod \
+            -DGGML_ACCELERATE=ON \
+            -DGGML_METAL=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DGGML_METAL_NDEBUG=ON \
+            -DGGML_BLAS="${ENABLE_BLAS}" \
+            -DGGML_BLAS_VENDOR=Apple \
+            -DGGML_OPENMP=OFF \
+            -DGGML_CUDA=OFF \
+            -DGGML_VULKAN=OFF
+
+          cmake --build build-ios-device --parallel "${{ github.event.inputs.build_parallel }}"
+
+      - name: Configure + build (iOS simulator arm64)
+        working-directory: ggml-src
+        run: |
+          set -euo pipefail
+
+          # Same configuration against the iphonesimulator SDK. On Apple Silicon Macs
+          # (the only in-scope debug hosts) the simulator runs the arm64 slice, so
+          # arm64 is the only simulator architecture that is produced.
+          cmake -S . -B build-ios-simulator -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES="${ARCH}" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="${MIN_IOS}" \
+            -DCMAKE_BUILD_TYPE="${{ github.event.inputs.configuration }}" \
+            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_OBJC_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_OBJCXX_FLAGS="-DGGML_MAX_NAME=128" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DGGML_BUILD_TESTS=OFF \
+            -DGGML_BUILD_EXAMPLES=OFF \
+            -DGGML_BACKEND_DL=OFF \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU=ON \
+            -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod \
+            -DGGML_ACCELERATE=ON \
+            -DGGML_METAL=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DGGML_METAL_NDEBUG=ON \
+            -DGGML_BLAS="${ENABLE_BLAS}" \
+            -DGGML_BLAS_VENDOR=Apple \
+            -DGGML_OPENMP=OFF \
+            -DGGML_CUDA=OFF \
+            -DGGML_VULKAN=OFF
+
+          cmake --build build-ios-simulator --parallel "${{ github.event.inputs.build_parallel }}"
+
+      - name: Merge static archives into a single libggml.a per slice
+        working-directory: ggml-src
+        run: |
+          set -euo pipefail
+
+          # With BUILD_SHARED_LIBS=OFF and GGML_BACKEND_DL=OFF every ggml piece is a
+          # separate .a. Merge each slice's archives into ONE libggml.a with libtool:
+          # on iOS the ggml P/Invokes are meant to bind as "__Internal", so the app
+          # links this single archive statically via NativeReference (Kind=Static) -
+          # one file keeps the consumer wiring (and the archive order) trivial.
+          merge_slice() {
+            local build_dir="$1"
+            local out_dir="$2"
+            mkdir -p "$out_dir"
+
+            local archives=""
+            for a in libggml-base.a libggml.a libggml-cpu.a libggml-metal.a libggml-blas.a; do
+              found="$(find "$build_dir" -name "$a" | head -n1)"
+              if [ -n "$found" ]; then
+                archives="${archives} ${found}"
+              fi
+            done
+
+            # The ggml core archives are mandatory; the backend archives depend on the
+            # enabled backends, so only their absence for a required backend would
+            # surface later.
+            for req in libggml-base.a libggml.a libggml-cpu.a libggml-metal.a; do
+              if ! find "$build_dir" -name "$req" | grep -q .; then
+                echo "Required static archive is missing in ${build_dir}: $req" >&2
+                exit 1
+              fi
+            done
+
+            # shellcheck disable=SC2086
+            libtool -static -o "${out_dir}/libggml.a" ${archives}
+          }
+
+          rm -rf merged
+          merge_slice build-ios-device merged/device
+          merge_slice build-ios-simulator merged/simulator
+
+      - name: Create libggml.xcframework
+        working-directory: ggml-src
+        run: |
+          set -euo pipefail
+
+          # One xcframework carries both slices; xcodebuild classifies each library by
+          # its LC_BUILD_VERSION platform tag (ios-arm64 / ios-arm64-simulator), which
+          # also implicitly re-validates that the device and simulator builds did not
+          # get mixed up.
+          xcodebuild -create-xcframework \
+            -library merged/device/libggml.a \
+            -library merged/simulator/libggml.a \
+            -output merged/libggml.xcframework
+
+      - name: Verify slices
+        working-directory: ggml-src
+        run: |
+          set -euo pipefail
+
+          verify_slice() {
+            local lib="$1"
+            local probe_root="$2"
+            local platform_tag="$3"
+
+            local archInfo
+            archInfo="$(lipo -info "$lib")"
+            if ! echo "$archInfo" | grep -q "${ARCH}"; then
+              echo "Missing ${ARCH} slice in ${lib}: ${archInfo}" >&2
+              exit 1
+            fi
+            if echo "$archInfo" | grep -q 'x86_64\|i386'; then
+              echo "Unexpected Intel slice in ${lib}: ${archInfo}" >&2
+              exit 1
+            fi
+
+            # The LC_BUILD_VERSION platform tag must say IOS (device) or IOSSIMULATOR
+            # (simulator; anchored so "IOS" cannot match inside "IOSSIMULATOR"). A
+            # plain macOS build or a device/simulator mix-up links on the runner but
+            # breaks the app build downstream.
+            local probe
+            probe="$(find "$probe_root" -name "*.o" | head -n1)"
+            if [ -z "$probe" ]; then
+              echo "No object file under ${probe_root} to verify the platform tag" >&2
+              exit 1
+            fi
+            if ! xcrun vtool -show-build-version "$probe" | grep -q " ${platform_tag}$"; then
+              echo "Platform tag mismatch in ${lib} (expected ${platform_tag}):" >&2
+              xcrun vtool -show-build-version "$probe" >&2
+              exit 1
+            fi
+          }
+
+          verify_slice merged/device/libggml.a build-ios-device IOS
+          verify_slice merged/simulator/libggml.a build-ios-simulator IOSSIMULATOR
+
+          # The merged archives must export the entry points SeasonGGML P/Invokes; a
+          # dropped backend object or an unresolved symbol shows up as a missing
+          # export here. Read nm once into a variable and match with a here-string:
+          # piping nm into grep -q lets grep close the pipe on the first match, which
+          # makes llvm-nm abort with "Broken pipe" and, under set -o pipefail, fails
+          # the whole pipeline even though the symbol was found.
+          for lib in merged/device/libggml.a merged/simulator/libggml.a; do
+            nmOut="$(nm -g "$lib")"
+            for sym in _ggml_backend_dev_count _ggml_backend_reg_count _ggml_backend_load_all _ggml_backend_dev_get_props; do
+              if ! grep -q " ${sym}$" <<< "$nmOut"; then
+                echo "Merged library does not export ${sym}: ${lib}" >&2
+                exit 1
+              fi
+            done
+          done
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+
+          out="out/runtimes/${RID}/native/multi-backend"
+          mkdir -p "$out"
+
+          cp ggml-src/LICENSE "$out/ggml.txt"
+
+          for header in ggml.h ggml-backend.h ggml-cpu.h ggml-metal.h ggml-blas.h; do
+            if [ -f "ggml-src/include/${header}" ]; then
+              cp "ggml-src/include/${header}" "$out/"
+            fi
+          done
+
+          rm -rf "$out/libggml.xcframework"
+          cp -R ggml-src/merged/libggml.xcframework "$out/libggml.xcframework"
+
+          if [ ! -f "$out/libggml.xcframework/ios-arm64/libggml.a" ] ||
+             [ ! -f "$out/libggml.xcframework/ios-arm64-simulator/libggml.a" ]; then
+            echo "Required ggml runtime is missing from the xcframework" >&2
+            ls -R "$out/libggml.xcframework" >&2
+            exit 1
+          fi
+
+          # Record the archive checksums so they can be verified after download.
+          # Transferring binaries through text-mode channels (sync tools, text
+          # editors, some file shares) corrupts the Mach-O headers; this is how a
+          # downstream user detects that before it reaches a device.
+          devSha=$(shasum -a 256 "$out/libggml.xcframework/ios-arm64/libggml.a" | awk '{print $1}')
+          simSha=$(shasum -a 256 "$out/libggml.xcframework/ios-arm64-simulator/libggml.a" | awk '{print $1}')
+
+          manifest="$out/README.txt"
+          {
+            echo "Platform: ${RID} (multi-backend xcframework carrying the device and arm64-simulator slices)"
+            echo "Configuration: ${{ github.event.inputs.configuration }}"
+            echo "GGML_REPO: https://github.com/${{ env.GGML_REPO }}"
+            echo "GGML_REF: ${{ github.event.inputs.ggml_ref }}"
+            echo "Target triples: arm64-apple-ios${{ github.event.inputs.ios_deployment_target }} (device), arm64-apple-ios${{ github.event.inputs.ios_deployment_target }}-simulator (simulator)"
+            echo "GGML_MAX_NAME: 128"
+            echo "Linkage: static (BUILD_SHARED_LIBS=OFF, GGML_BACKEND_DL=OFF), merged into a single libggml.a per slice"
+            echo "Enabled backends: cpu (armv8.2-a+dotprod), metal, blas=${{ github.event.inputs.ios_blas }}"
+            echo ""
+            echo "This build packages a single self-contained ggml runtime for iOS."
+            echo "Two slices only, both arm64: ios-arm64 (device) and ios-arm64-simulator (Apple Silicon Macs). One arm64 iOS target does NOT also cover the simulator - device and simulator are distinct Mach-O platforms; no x86_64 simulator slice is produced, Intel Macs are out of scope."
+            echo "On iOS the ggml P/Invokes are meant to bind as __Internal (unlike the libggml dylib used on Mac Catalyst), so the app statically links libggml.a via NativeReference (Kind=Static)."
+            echo "Static linkage: ggml core and every backend are archived into the single libggml.a and registered at runtime by ggml's backend registry; nothing is dlopen'd."
+            echo "Self-contained: a complete ggml build is merged in. If several self-contained ggml-based archives (ggml, llama, qwentts, ...) are linked into the same app, keep exactly one ForceLoad=True owner; otherwise the duplicate ggml objects clash at link time."
+            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=128 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
+            echo "CPU targets the M1 baseline (armv8.2-a+dotprod), supported by every A12+ device and every Apple Silicon simulator."
+            echo "Metal uses GGML_METAL_EMBED_LIBRARY so the shader source travels inside libggml.a; no default.metallib has to be deployed or located in the app bundle."
+            echo "BLAS uses Apple's Accelerate framework (GGML_BLAS_VENDOR=Apple), which is available on both iOS devices and simulators."
+            echo "CUDA and Vulkan are unavailable on iOS and are explicitly disabled."
+            echo ""
+            echo "libggml.a sha256 (ios-arm64): ${devSha}"
+            echo "libggml.a sha256 (ios-arm64-simulator): ${simSha}"
+            echo "Artifact contents:"
+            (cd "$out" && find . | sort)
+          } > "$manifest"
+
+          cat "$manifest"
+
+      - name: Upload iOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ggml-${{ env.RID }}-multi-backend-${{ github.event.inputs.configuration }}
