@@ -50,6 +50,16 @@
 		<None Include="README.md" Pack="true" PackagePath="\" />
 		<None Include="runtimes\win-x64\native\*" Pack="true" PackagePath="runtimes/win-x64/native/" Condition="Exists('runtimes\win-x64\native')" />
 		<None Include="runtimes\maccatalyst-arm64\native\*" Pack="true" PackagePath="runtimes/maccatalyst-arm64/native/" Condition="Exists('runtimes\maccatalyst-arm64\native')" />
+
+		<!--
+		  iOS ships a static libggml.xcframework (ios-arm64 device + ios-arm64-simulator
+		  slices, built by build-ggml.yml). Unlike the Mac Catalyst dylib it is LINKED
+		  into the app (the P/Invokes bind as __Internal on iOS), never copied into the
+		  bundle, so there is deliberately no Content item for it here; the app project
+		  wires the NativeReference (see SeasonStudio.csproj). The ** glob keeps the
+		  xcframework directory layout inside the NuGet package.
+		-->
+		<None Include="runtimes\ios-arm64\native\**" Pack="true" PackagePath="runtimes/ios-arm64/native/%(RecursiveDir)%(Filename)%(Extension)" Condition="Exists('runtimes\ios-arm64\native')" />
 	</ItemGroup>
 
 	<!-- Windows: copy DLLs directly to output root (next to the .exe/.dll) -->

@@ -6,8 +6,16 @@ namespace Season.GGML;
 
 internal static class GgmlNative
 {
+#if IOS
+    // iOS ships a single statically-linked runtime (libggml.a merges ggml, ggml-base
+    // and every backend), so both P/Invoke names bind against the executable itself
+    // via "__Internal" - there is no dylib to load at runtime.
+    internal const string LibraryName = "__Internal";
+    internal const string BaseLibraryName = "__Internal";
+#else
     internal const string LibraryName = "ggml";
     internal const string BaseLibraryName = "ggml-base";
+#endif
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct NativeGgmlBackendDevCaps

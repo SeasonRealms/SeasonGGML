@@ -14,6 +14,9 @@ public static class GGML
 
     public static bool IsSupported =>
         OperatingSystem.IsWindows() ||
+        // IsIOS() can report true on Mac Catalyst, so the guard keeps the arm64-only
+        // Mac Catalyst clause below in charge there.
+        (OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst()) ||
         (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64);
 
     public static GgmlBackendInfo[] GetAvailableBackends()
@@ -186,15 +189,15 @@ public static class GGML
             CompiledTopTier: compiledTopTier,
             SystemTopTier: systemTopTier,
             EffectiveTopTier: effectiveTopTier,
-            Notes: "CPU backend features are queried via the ggml runtime's backend registry. On Mac Catalyst the CPU backend is statically linked into libggml.dylib; on Windows it is provided by the ggml-cpu module. Either way the features are exposed through the CPU registry.");
+            Notes: "CPU backend features are queried via the ggml runtime's backend registry. On Mac Catalyst and iOS the CPU backend is statically linked into libggml.dylib / libggml.a; on Windows it is provided by the ggml-cpu module. Either way the features are exposed through the CPU registry.");
     }
 
     internal static void EnsureSupported()
     {
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacCatalyst())
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacCatalyst() && !OperatingSystem.IsIOS())
         {
             throw new PlatformNotSupportedException(
-                "SeasonGGML currently ships GGML native binaries only for Windows and Mac Catalyst (Apple Silicon).");
+                "SeasonGGML currently ships GGML native binaries only for Windows, Mac Catalyst (Apple Silicon) and iOS.");
         }
 
         // The Mac Catalyst artifact is a pure arm64 slice, so on an Intel Mac - or under
@@ -224,11 +227,11 @@ public static class GGML
                 return;
             }
 
-            // Mac Catalyst ships a fully static runtime: CPU, Metal and BLAS are compiled
-            // into libggml.dylib and registered by ggml's backend registry on first use.
-            // There are no loadable .so modules to discover, so directory probing is a
-            // no-op and is skipped.
-            if (OperatingSystem.IsMacCatalyst())
+            // Mac Catalyst and iOS ship a fully static runtime: CPU, Metal and BLAS are
+            // compiled into libggml.dylib / libggml.a and registered by ggml's backend
+            // registry on first use. There are no loadable .so modules to discover, so
+            // directory probing is a no-op and is skipped.
+            if (OperatingSystem.IsMacCatalyst() || OperatingSystem.IsIOS())
             {
                 s_backendsLoaded = true;
                 return;
@@ -295,6 +298,14 @@ public static class GGML
 
     private static IntPtr ResolveNativeLibrary(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
     {
+        // On iOS the P/Invokes bind as "__Internal" against the statically linked image;
+        // there is no dylib file to probe for. (Guard with !IsMacCatalyst because
+        // IsIOS() can report true on Mac Catalyst, whose dylib probing must stay.)
+        if (OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst())
+        {
+            return IntPtr.Zero;
+        }
+
         if (libraryName is not (GgmlNative.LibraryName or GgmlNative.BaseLibraryName))
         {
             return IntPtr.Zero;
