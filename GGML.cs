@@ -14,6 +14,7 @@ public static class GGML
 
     public static bool IsSupported =>
         OperatingSystem.IsWindows() ||
+        OperatingSystem.IsLinux() ||
         // IsIOS() can report true on Mac Catalyst, so the guard keeps the arm64-only
         // Mac Catalyst clause below in charge there.
         (OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst()) ||
@@ -194,10 +195,10 @@ public static class GGML
 
     internal static void EnsureSupported()
     {
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacCatalyst() && !OperatingSystem.IsIOS())
+        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux() && !OperatingSystem.IsMacCatalyst() && !OperatingSystem.IsIOS())
         {
             throw new PlatformNotSupportedException(
-                "SeasonGGML currently ships GGML native binaries only for Windows, Mac Catalyst (Apple Silicon) and iOS.");
+                "SeasonGGML currently ships GGML native binaries only for Windows, Linux (x64), Mac Catalyst (Apple Silicon) and iOS.");
         }
 
         // The Mac Catalyst artifact is a pure arm64 slice, so on an Intel Mac - or under
@@ -311,6 +312,17 @@ public static class GGML
             return IntPtr.Zero;
         }
 
+        // On Linux, ld.so resolves DT_NEEDED entries from the loader search path only -
+        // it never looks next to the library being opened. libggml.so NEEDs
+        // libggml-base.so.0, so the base library has to be dlopen'd (by absolute path)
+        // first; glibc then registers its SONAME, which satisfies the dependency.
+        // Windows finds ggml-base.dll through the app directory and Mac Catalyst merges
+        // everything into one dylib, so neither needs the ordering.
+        if (OperatingSystem.IsLinux() && libraryName == GgmlNative.LibraryName)
+        {
+            _ = ResolveNativeLibrary(GgmlNative.BaseLibraryName, assembly, searchPath);
+        }
+
         lock (s_resolverLock)
         {
             if (s_nativeHandles.TryGetValue(libraryName, out var cached) && cached != IntPtr.Zero)
@@ -338,10 +350,15 @@ public static class GGML
     private static string GetNativeFileName(string libraryName) =>
         OperatingSystem.IsWindows()
             ? $"{libraryName}.dll"
-            // Mac Catalyst ships a single statically-linked runtime: ggml, ggml-base and
-            // every backend are merged into one libggml.dylib, so both P/Invoke names
-            // ("ggml" and "ggml-base") resolve to the same file.
-            : "libggml.dylib";
+            // Linux desktop ships ggml and ggml-base as separate shared objects that
+            // follow the usual lib<name>.so naming ("ggml" -> libggml.so,
+            // "ggml-base" -> libggml-base.so).
+            : OperatingSystem.IsLinux()
+                ? $"lib{libraryName}.so"
+                // Mac Catalyst ships a single statically-linked runtime: ggml, ggml-base
+                // and every backend are merged into one libggml.dylib, so both P/Invoke
+                // names ("ggml" and "ggml-base") resolve to the same file.
+                : "libggml.dylib";
 
     private static IEnumerable<string> EnumerateNativeSearchDirectories()
     {
@@ -391,6 +408,11 @@ public static class GGML
         if (OperatingSystem.IsMacCatalyst())
         {
             return $"maccatalyst-{arch}";
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            return $"linux-{arch}";
         }
 
         return OperatingSystem.IsWindows() ? $"win-{arch}" : null;

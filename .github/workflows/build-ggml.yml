@@ -127,7 +127,7 @@ jobs:
             '-DGGML_CUDA=ON',
             '-DGGML_VULKAN=ON',
             '-DGGML_CUDA_CUB_3DOT2=ON',
-            '-DCMAKE_CUDA_FLAGS=-Xcudafe "--diag_suppress=177" -Xcudafe "--diag_suppress=550"',
+            '-DCMAKE_CUDA_FLAGS=-Xcudafe "--diag_suppress=177" -Xcudafe "--diag_suppress=550" /DGGML_MAX_NAME=128',
             '-DCMAKE_CUDA_ARCHITECTURES=${{ github.event.inputs.cuda_architectures }}'
           )
 
@@ -461,6 +461,7 @@ jobs:
             -DGGML_CUDA=ON \
             -DGGML_VULKAN=ON \
             -DGGML_CUDA_CUB_3DOT2=ON \
+            -DCMAKE_CUDA_FLAGS="-DGGML_MAX_NAME=128" \
             -DCMAKE_CUDA_ARCHITECTURES="${{ github.event.inputs.cuda_architectures }}"
 
       - name: Build
