@@ -16,11 +16,11 @@ on:
         required: true
         default: "master"
       cuda_version:
-        description: "CUDA Toolkit version for the Windows build"
+        description: "CUDA Toolkit version for the Windows and Linux builds"
         required: false
         default: "12.8.1"
       cuda_architectures:
-        description: "CUDA architectures for the Windows CMake build"
+        description: "CUDA architectures for the Windows and Linux CMake builds"
         required: false
         default: "75-virtual;80-real;86-real;89-real;90-virtual"
       cudnn_redist_url:
@@ -60,6 +60,7 @@ on:
           - maccatalyst
           - ios
           - windows
+          - linux
       build_parallel:
         description: "Parallel build jobs"
         required: false
@@ -403,6 +404,131 @@ jobs:
         with:
           name: ggml-win-x64-multi-backend-${{ github.event.inputs.configuration }}
           path: out/runtimes/win-x64/native/multi-backend/
+          if-no-files-found: error
+
+  build-linux:
+    # Runs only when build_target is linux; every other build job is gated the
+    # same way, so exactly one build job executes per workflow run.
+    if: github.event.inputs.build_target == 'linux'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout SeasonGGML repository
+        uses: actions/checkout@v4
+
+      - name: Checkout SeasonRealms/ggml
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GGML_REPO }}
+          ref: ${{ github.event.inputs.ggml_ref }}
+          path: ggml-src
+          submodules: recursive
+
+      # Same build-time toolchain as the Windows job: Vulkan SDK for ggml-vulkan
+      # (provides glslc) and CUDA Toolkit for ggml-cuda (nvcc + cudart + cuBLAS).
+      # The toolkit is build-time only: CUDA runtimes are NOT bundled into the
+      # artifact (mirroring Windows, where cudacudnn-runtime is packaged
+      # separately). Users install CUDA 12.x system-wide per the documented
+      # guidance, so no CUDA .so files are collected.
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+
+      # Linux sub-package names get the "cuda-" prefix added automatically
+      # (nvcc -> cuda-nvcc), while the cuBLAS packages live outside that
+      # namespace and must be requested through non-cuda-sub-packages.
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: "${{ github.event.inputs.cuda_version }}"
+          method: network
+          sub-packages: '["nvcc", "cudart-dev"]'
+          non-cuda-sub-packages: '["libcublas", "libcublas-dev"]'
+
+      - name: Configure CMake
+        working-directory: ggml-src
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE="${{ github.event.inputs.configuration }}" \
+            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=128" \
+            -DBUILD_SHARED_LIBS=ON \
+            -DGGML_BUILD_TESTS=OFF \
+            -DGGML_BUILD_EXAMPLES=OFF \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_CUDA=ON \
+            -DGGML_VULKAN=ON \
+            -DGGML_CUDA_CUB_3DOT2=ON \
+            -DCMAKE_CUDA_ARCHITECTURES="${{ github.event.inputs.cuda_architectures }}"
+
+      - name: Build
+        working-directory: ggml-src
+        run: |
+          cmake --build build --config "${{ github.event.inputs.configuration }}" --parallel "${{ github.event.inputs.build_parallel }}"
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          out="out/runtimes/linux-x64/native/multi-backend"
+          mkdir -p "$out"
+
+          cp ggml-src/LICENSE "$out/ggml.txt"
+
+          for header in \
+            "ggml-src/include/ggml.h" \
+            "ggml-src/include/ggml-backend.h" \
+            "ggml-src/include/ggml-cpu.h"; do
+            if [ -f "$header" ]; then
+              cp "$header" "$out"
+            fi
+          done
+
+          # Dereference the SONAME symlink chains (libggml.so -> libggml.so.0 ->
+          # libggml.so.0.x.y) so the artifact carries real files under every name
+          # that dlopen and the linker-recorded SONAMEs look for at runtime.
+          find ggml-src/build -name 'libggml*.so*' -exec cp -Lf {} "$out/" \;
+
+          for name in libggml.so libggml-base.so libggml-cuda.so libggml-vulkan.so; do
+            if [ ! -f "$out/$name" ]; then
+              echo "Required GGML runtime is missing: $name" >&2
+              exit 1
+            fi
+          done
+
+          cpu_backends=$(find "$out" -maxdepth 1 -type f -name 'libggml-cpu*.so' | sort)
+          if [ -z "$cpu_backends" ]; then
+            echo "No CPU GGML backend variants were produced." >&2
+            exit 1
+          fi
+
+          {
+            echo "GGML_REPO: https://github.com/${{ env.GGML_REPO }}"
+            echo "GGML_REF: ${{ github.event.inputs.ggml_ref }}"
+            echo "Configuration: ${{ github.event.inputs.configuration }}"
+            echo "CUDA Toolkit version (build time only): ${{ github.event.inputs.cuda_version }}"
+            echo "GGML_MAX_NAME: 128"
+            echo "Enabled backends: cpu-all-variants, cuda12, vulkan"
+            echo ""
+            echo "This build packages standalone ggml shared libraries for linux-x64."
+            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=128 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
+            echo "CPU uses GGML_CPU_ALL_VARIANTS with GGML_BACKEND_DL so one runtime can expose multiple x86 CPU variants and let ggml choose the best supported backend at runtime."
+            echo ""
+            echo "CUDA and cuDNN runtimes are NOT bundled: install CUDA 12.x system-wide for the CUDA backend."
+            echo ""
+            echo "CPU backend libraries:"
+            echo "$cpu_backends"
+            echo ""
+            echo "Artifact contents:"
+            (cd "$out" && ls -1 | sort)
+          } > "$out/README.txt"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ggml-linux-x64-multi-backend-${{ github.event.inputs.configuration }}
+          path: out/runtimes/linux-x64/native/multi-backend/
           if-no-files-found: error
 
   build-maccatalyst:
