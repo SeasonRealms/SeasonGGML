@@ -12,13 +12,13 @@ public static class GGML
     private static bool s_backendsLoaded;
     private static bool s_resolverRegistered;
 
-    public static bool IsSupported =>
-        OperatingSystem.IsWindows() ||
-        OperatingSystem.IsLinux() ||
-        // IsIOS() can report true on Mac Catalyst, so the guard keeps the arm64-only
-        // Mac Catalyst clause below in charge there.
-        (OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst()) ||
-        (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64);
+    //public static bool IsSupported =>
+    //    OperatingSystem.IsWindows() ||
+    //    OperatingSystem.IsLinux() ||
+    //    // IsIOS() can report true on Mac Catalyst, so the guard keeps the arm64-only
+    //    // Mac Catalyst clause below in charge there.
+    //    (OperatingSystem.IsIOS() && !OperatingSystem.IsMacCatalyst()) ||
+    //    (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64);
 
     public static GgmlBackendInfo[] GetAvailableBackends()
     {
@@ -195,21 +195,21 @@ public static class GGML
 
     internal static void EnsureSupported()
     {
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux() && !OperatingSystem.IsMacCatalyst() && !OperatingSystem.IsIOS())
-        {
-            throw new PlatformNotSupportedException(
-                "SeasonGGML currently ships GGML native binaries only for Windows, Linux (x64), Mac Catalyst (Apple Silicon) and iOS.");
-        }
+        //if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux() && !OperatingSystem.IsMacCatalyst() && !OperatingSystem.IsIOS())
+        //{
+        //    throw new PlatformNotSupportedException(
+        //        "SeasonGGML currently ships GGML native binaries only for Windows, Linux (x64), Mac Catalyst (Apple Silicon) and iOS.");
+        //}
 
-        // The Mac Catalyst artifact is a pure arm64 slice, so on an Intel Mac - or under
-        // Rosetta - the dylib cannot even be opened. Report that reason instead of
-        // letting the first P/Invoke surface a bare DllNotFoundException.
-        if (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
-        {
-            throw new PlatformNotSupportedException(
-                "SeasonGGML ships Mac Catalyst GGML native binaries for Apple Silicon (arm64) only; " +
-                $"this process runs as {RuntimeInformation.ProcessArchitecture}.");
-        }
+        //// The Mac Catalyst artifact is a pure arm64 slice, so on an Intel Mac - or under
+        //// Rosetta - the dylib cannot even be opened. Report that reason instead of
+        //// letting the first P/Invoke surface a bare DllNotFoundException.
+        //if (OperatingSystem.IsMacCatalyst() && RuntimeInformation.ProcessArchitecture != Architecture.Arm64)
+        //{
+        //    throw new PlatformNotSupportedException(
+        //        "SeasonGGML ships Mac Catalyst GGML native binaries for Apple Silicon (arm64) only; " +
+        //        $"this process runs as {RuntimeInformation.ProcessArchitecture}.");
+        //}
 
         EnsureResolverRegistered();
     }
