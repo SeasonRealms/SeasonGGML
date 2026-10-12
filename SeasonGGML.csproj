@@ -51,6 +51,7 @@
 		<None Include="runtimes\win-x64\native\*" Pack="true" PackagePath="runtimes/win-x64/native/" Condition="Exists('runtimes\win-x64\native')" />
 		<None Include="runtimes\maccatalyst-arm64\native\*" Pack="true" PackagePath="runtimes/maccatalyst-arm64/native/" Condition="Exists('runtimes\maccatalyst-arm64\native')" />
 		<None Include="runtimes\linux-x64\native\*" Exclude="runtimes\linux-x64\native\*.h;runtimes\linux-x64\native\*.txt" Pack="true" PackagePath="runtimes/linux-x64/native/" Condition="Exists('runtimes\linux-x64\native')" />
+		<None Include="runtimes\android-arm64\native\*" Exclude="runtimes\android-arm64\native\*.h;runtimes\android-arm64\native\*.txt" Pack="true" PackagePath="runtimes/android-arm64/native/" Condition="Exists('runtimes\android-arm64\native')" />
 
 		<!--
 		  iOS ships a static libggml.xcframework (ios-arm64 device + ios-arm64-simulator
@@ -64,17 +65,21 @@
 	</ItemGroup>
 
 	<!--
-	  Android 目标：剔除 AutoImport 误纳的桌面 native 库。Android SDK 的
-	  Sdk\AutoImport.props 会把项目目录下所有 **\*.so 自动导入为
-	  AndroidNativeLibrary；本项目是 NuGet 式 runtimes\<rid>\native\ 布局，
-	  linux-x64 桌面 .so（只服务于 net10.0 目标的 P/Invoke）被一并吸纳，
-	  而 Android 类库构建的 AAR 打包（_CreateAar → CreateAar）会对每个
-	  native lib 做 ABI 判定，非 Android RID 的路径无法判定并报 XA4301。
-	  将来若需向 Android 提供 native 库，应在下方 Remove 之后显式 Include
-	  （参考 Season 项目 Platforms\Android\libs\<abi> 的布局）。
+Android Target: Remove desktop native libraries mistakenly included by AutoImport. Android SDK's
+Sdk\AutoImport.props will automatically import all **\*.so files under the project directory as
+AndroidNativeLibrary; This project follows the NuGet-style runtime layout of <rid>/native/,
+The Linux-x64 desktop .so (P/Invoke only for net10.0 targets) has been fully incorporated,
+The AAR packaging built by Android class libraries (_CreateAar → CreateAar) will process each
+The native library performs ABI determination, and paths without an Android RID cannot be determined, resulting in an XA4301 error.
+Android provides the arm64-v8a runtime (runtimes\android-arm64\native, by
+The build-android job in build-*.yml builds with NDK r28+ and 16 KB page alignment
+First, remove all the full .so files of AutoImport (including any mistakenly included desktop items), then explicitly include them
+runtimes\android-arm64\native——XA maps the android-arm64 RID to
+arm64-v8a, with the same layout as the official nativeassets packages for SkiaSharp / HarfBuzzSharp.
 	-->
 	<ItemGroup Condition="'$(IsAndroid)' == 'true'">
 		<AndroidNativeLibrary Remove="runtimes\**\*.so" />
+		<AndroidNativeLibrary Include="runtimes\android-arm64\native\*.so" Condition="Exists('runtimes\android-arm64\native')" />
 	</ItemGroup>
 
 	<!-- Windows: copy DLLs directly to output root (next to the .exe/.dll) -->

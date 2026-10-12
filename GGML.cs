@@ -190,7 +190,7 @@ public static class GGML
             CompiledTopTier: compiledTopTier,
             SystemTopTier: systemTopTier,
             EffectiveTopTier: effectiveTopTier,
-            Notes: "CPU backend features are queried via the ggml runtime's backend registry. On Mac Catalyst and iOS the CPU backend is statically linked into libggml.dylib / libggml.a; on Windows it is provided by the ggml-cpu module. Either way the features are exposed through the CPU registry.");
+            Notes: "CPU backend features are queried via the ggml runtime's backend registry. On Mac Catalyst and iOS the CPU backend is statically linked into libggml.dylib / libggml.a; on Windows it is provided by the ggml-cpu module; on Android by libggml-cpu.so pulled in through libggml.so's DT_NEEDED entries. Either way the features are exposed through the CPU registry.");
     }
 
     internal static void EnsureSupported()
@@ -232,7 +232,13 @@ public static class GGML
             // compiled into libggml.dylib / libggml.a and registered by ggml's backend
             // registry on first use. There are no loadable .so modules to discover, so
             // directory probing is a no-op and is skipped.
-            if (OperatingSystem.IsMacCatalyst() || OperatingSystem.IsIOS())
+            // Android has the same "nothing to dlopen" shape with a dynamic topology:
+            // GGML_BACKEND_DL=OFF makes libggml.so NEED libggml-cpu.so and
+            // libggml-base.so (the linker loads them with it) and libggml.so calls
+            // ggml_backend_cpu_reg() directly at registry construction - the CPU
+            // backend is registered by the time the first load returns, and
+            // ggml_backend_load_all() is a compiled no-op.
+            if (OperatingSystem.IsMacCatalyst() || OperatingSystem.IsIOS() || OperatingSystem.IsAndroid())
             {
                 s_backendsLoaded = true;
                 return;
@@ -307,6 +313,19 @@ public static class GGML
             return IntPtr.Zero;
         }
 
+        // On Android the .so files ship inside the APK's jniLibs and are installed to
+        // the app's native library directory, which the platform linker searches by
+        // file name - for the requested library and for its DT_NEEDED entries alike
+        // (unlike glibc, which never looks next to the library being opened). That is
+        // how libggml.so finds libggml-cpu.so / libggml-base.so, so the runtime's
+        // default probing is both sufficient and more reliable than the File.Exists
+        // probing below: the native library directory is not reachable through
+        // AppContext.BaseDirectory.
+        if (OperatingSystem.IsAndroid())
+        {
+            return IntPtr.Zero;
+        }
+
         if (libraryName is not (GgmlNative.LibraryName or GgmlNative.BaseLibraryName))
         {
             return IntPtr.Zero;
@@ -350,10 +369,11 @@ public static class GGML
     private static string GetNativeFileName(string libraryName) =>
         OperatingSystem.IsWindows()
             ? $"{libraryName}.dll"
-            // Linux desktop ships ggml and ggml-base as separate shared objects that
-            // follow the usual lib<name>.so naming ("ggml" -> libggml.so,
-            // "ggml-base" -> libggml-base.so).
-            : OperatingSystem.IsLinux()
+            // Linux desktop and Android ship ggml and ggml-base as separate shared
+            // objects that follow the usual lib<name>.so naming ("ggml" -> libggml.so,
+            // "ggml-base" -> libggml-base.so). Android has no versioned SONAMEs; the
+            // plain file name is what the linker looks up.
+            : OperatingSystem.IsLinux() || OperatingSystem.IsAndroid()
                 ? $"lib{libraryName}.so"
                 // Mac Catalyst ships a single statically-linked runtime: ggml, ggml-base
                 // and every backend are merged into one libggml.dylib, so both P/Invoke
@@ -408,6 +428,15 @@ public static class GGML
         if (OperatingSystem.IsMacCatalyst())
         {
             return $"maccatalyst-{arch}";
+        }
+
+        // Android is arm64-only in this repo; the RID matches the runtimes folder the
+        // packages ship (runtimes/android-arm64/native). The deployed .so files live in
+        // the APK's native library directory rather than under AppContext.BaseDirectory,
+        // so the resolver returns before probing - the RID is reported for completeness.
+        if (OperatingSystem.IsAndroid())
+        {
+            return $"android-{arch}";
         }
 
         if (OperatingSystem.IsLinux())
