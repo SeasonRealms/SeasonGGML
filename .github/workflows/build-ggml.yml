@@ -1149,18 +1149,30 @@ jobs:
       # GGML_VULKAN=ON needs a build-time shader compiler: the SDK's glslc turns
       # every Vulkan shader into SPIR-V during the build (the result is embedded
       # in libggml-vulkan.so, so the runtime keeps no shader files) and the SDK
-      # headers provide <vulkan/vulkan.h>. The Vulkan loader itself is NOT
-      # linked: ggml loads the device's system loader (libvulkan.so) at runtime,
-      # exactly like the Windows/Linux builds.
+      # headers provide <vulkan/vulkan.h>. At link time the NDK sysroot's
+      # libvulkan.so stub satisfies Vulkan::Vulkan, so the real (system) loader
+      # is resolved by Android's linker on-device.
       - name: Install Vulkan SDK
         uses: jakoch/install-vulkan-sdk-action@v1
 
-      # ggml's Vulkan CMake prefers the SDK's glslc over building its own shader
-      # generator, which cross-compilation cannot run; fail early with a clear
-      # message if the SDK install did not provide glslc.
-      - name: Verify glslc availability
+      # The Android configure step needs two things from the Vulkan SDK: glslc
+      # (compiles every Vulkan shader to SPIR-V at build time) and the
+      # SPIRV-Headers CMake package (find_package(SPIRV-Headers CONFIG REQUIRED)
+      # in src/ggml-vulkan). Probe both here so a missing SDK piece fails with
+      # a clear message instead of a CMake error deep in configure.
+      #
+      # SPIRV-Headers is located and exported explicitly because ggml's CMake
+      # cannot find it on its own under the NDK toolchain: ggml appends
+      # $VULKAN_SDK to CMAKE_PREFIX_PATH, but the toolchain's root-path "ONLY"
+      # package search re-roots every prefix path into the sysroot, so the
+      # SDK's config files stay invisible to find_package(SPIRV-Headers) during
+      # the Android configure step. A *_DIR passed on the cmake command line is
+      # used as-is and bypasses the re-rooting; the package is header-only (for
+      # the host-side shader generator), so the SDK copy is valid here.
+      - name: Verify Vulkan SDK prerequisites (glslc, SPIRV-Headers)
         run: |
           set -euo pipefail
+
           GLSLC="$(command -v glslc || true)"
           if [ -z "${GLSLC}" ] && [ -n "${VULKAN_SDK:-}" ]; then
             GLSLC="${VULKAN_SDK}/bin/glslc"
@@ -1170,6 +1182,20 @@ jobs:
             exit 1
           fi
           "${GLSLC}" --version
+
+          if [ -z "${VULKAN_SDK:-}" ] || [ ! -d "${VULKAN_SDK}" ]; then
+            echo "VULKAN_SDK is not set to a directory; cannot locate the SPIRV-Headers CMake package." >&2
+            exit 1
+          fi
+
+          config="$(find "${VULKAN_SDK}" \( -iname 'SPIRV-HeadersConfig.cmake' -o -iname 'spirv-headers-config.cmake' \) -print -quit)"
+          if [ -z "${config}" ]; then
+            echo "SPIRV-HeadersConfig.cmake not found under ${VULKAN_SDK}." >&2
+            exit 1
+          fi
+
+          echo "SPIRV_HEADERS_DIR=$(dirname "${config}")" >> "$GITHUB_ENV"
+          echo "Located SPIRV-Headers CMake package: $(dirname "${config}")"
 
       - name: Configure CMake (Android)
         working-directory: ggml-src
@@ -1192,11 +1218,16 @@ jobs:
           # the Vulkan device registers alongside the CPU device. The CPU
           # baseline (armv8.2-a+dotprod, M1/Apple-A14 class) matches the iOS
           # build instead of the x86 variant zoo used on desktop.
+          # SPIRV-Headers_DIR comes from the preceding step: the NDK toolchain's
+          # root-path "ONLY" package search hides the Vulkan SDK's config files
+          # from find_package(SPIRV-Headers), while an explicitly passed *_DIR
+          # is used as-is (see that step for the details).
           cmake -S . -B build-android -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI="${ABI}" \
             -DANDROID_PLATFORM="android-${ANDROID_API}" \
             -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
+            -DSPIRV-Headers_DIR="${SPIRV_HEADERS_DIR}" \
             -DCMAKE_BUILD_TYPE="${{ github.event.inputs.configuration }}" \
             -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=128" \
             -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=128" \
