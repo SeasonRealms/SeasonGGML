@@ -1169,7 +1169,7 @@ jobs:
       # the Android configure step. A *_DIR passed on the cmake command line is
       # used as-is and bypasses the re-rooting; the package is header-only (for
       # the host-side shader generator), so the SDK copy is valid here.
-      - name: Verify Vulkan SDK prerequisites (glslc, SPIRV-Headers)
+      - name: Verify Vulkan SDK prerequisites (glslc, headers, SPIRV-Headers)
         run: |
           set -euo pipefail
 
@@ -1197,6 +1197,12 @@ jobs:
           echo "SPIRV_HEADERS_DIR=$(dirname "${config}")" >> "$GITHUB_ENV"
           echo "Located SPIRV-Headers CMake package: $(dirname "${config}")"
 
+          if [ ! -f "${VULKAN_SDK}/include/vulkan/vulkan.hpp" ]; then
+            echo "vulkan/vulkan.hpp (Vulkan-Hpp) not found under ${VULKAN_SDK}/include." >&2
+            exit 1
+          fi
+          echo "Vulkan-Hpp header present: ${VULKAN_SDK}/include/vulkan/vulkan.hpp"
+
       - name: Configure CMake (Android)
         working-directory: ggml-src
         run: |
@@ -1222,12 +1228,23 @@ jobs:
           # root-path "ONLY" package search hides the Vulkan SDK's config files
           # from find_package(SPIRV-Headers), while an explicitly passed *_DIR
           # is used as-is (see that step for the details).
+          #
+          # Vulkan_INCLUDE_DIR is pinned to the SDK for the same root-path
+          # reason: FindVulkan's own search resolves the include directory to
+          # <sysroot>/usr/include, which carries the C headers only - ggml
+          # includes <vulkan/vulkan.hpp> (Vulkan-Hpp) and the SPIR-V headers,
+          # both of which exist only in the SDK's include tree. The library is
+          # deliberately NOT pinned: the sysroot's libvulkan.so stub is the
+          # correct link-time placeholder (libggml-vulkan.so records it as a
+          # DT_NEEDED entry) and Android's linker resolves the real on-device
+          # loader at load time.
           cmake -S . -B build-android -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI="${ABI}" \
             -DANDROID_PLATFORM="android-${ANDROID_API}" \
             -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
             -DSPIRV-Headers_DIR="${SPIRV_HEADERS_DIR}" \
+            -DVulkan_INCLUDE_DIR="${VULKAN_SDK}/include" \
             -DCMAKE_BUILD_TYPE="${{ github.event.inputs.configuration }}" \
             -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=128" \
             -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=128" \
