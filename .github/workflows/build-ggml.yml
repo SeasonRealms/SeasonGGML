@@ -1146,6 +1146,31 @@ jobs:
           echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
           echo "Using Android NDK ${NDK_VERSION} at ${NDK_DIR}"
 
+      # GGML_VULKAN=ON needs a build-time shader compiler: the SDK's glslc turns
+      # every Vulkan shader into SPIR-V during the build (the result is embedded
+      # in libggml-vulkan.so, so the runtime keeps no shader files) and the SDK
+      # headers provide <vulkan/vulkan.h>. The Vulkan loader itself is NOT
+      # linked: ggml loads the device's system loader (libvulkan.so) at runtime,
+      # exactly like the Windows/Linux builds.
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+
+      # ggml's Vulkan CMake prefers the SDK's glslc over building its own shader
+      # generator, which cross-compilation cannot run; fail early with a clear
+      # message if the SDK install did not provide glslc.
+      - name: Verify glslc availability
+        run: |
+          set -euo pipefail
+          GLSLC="$(command -v glslc || true)"
+          if [ -z "${GLSLC}" ] && [ -n "${VULKAN_SDK:-}" ]; then
+            GLSLC="${VULKAN_SDK}/bin/glslc"
+          fi
+          if [ ! -x "${GLSLC}" ]; then
+            echo "glslc not found; the Vulkan SDK install step did not provide it." >&2
+            exit 1
+          fi
+          "${GLSLC}" --version
+
       - name: Configure CMake (Android)
         working-directory: ggml-src
         run: |
@@ -1156,12 +1181,15 @@ jobs:
           # PAGE_SIZES=ON is the NDK r27+ switch behind -Wl,-z,max-page-size=
           # 16384 (already the r28 default; passed explicitly so the 16 KB
           # intent survives toolchain changes and is re-verified post-build).
-          # The backend model differs from Windows/Linux: CPU is the only
-          # backend (no CUDA/Vulkan on Android), and GGML_BACKEND_DL=OFF keeps
-          # it a plain shared library linked into libggml.so via DT_NEEDED, so
-          # the ggml registry self-registers at load time (same runtime model
-          # as the iOS build) and the app only loads libggml.so - no backend
-          # directory scan or dlopen bookkeeping on the .NET side. The CPU
+          # The backend model differs from Windows/Linux: there is no CUDA on
+          # Android, and GGML_BACKEND_DL=OFF keeps every enabled backend a
+          # plain shared library linked into libggml.so via DT_NEEDED, so the
+          # ggml registry self-registers at load time (same runtime model as
+          # the iOS build) and the app only loads libggml.so - no backend
+          # directory scan or dlopen bookkeeping on the .NET side. Vulkan is
+          # enabled (GGML_VULKAN=ON): its shaders are compiled to SPIR-V by
+          # glslc during the build and libggml.so NEEDs libggml-vulkan.so, so
+          # the Vulkan device registers alongside the CPU device. The CPU
           # baseline (armv8.2-a+dotprod, M1/Apple-A14 class) matches the iOS
           # build instead of the x86 variant zoo used on desktop.
           cmake -S . -B build-android -G Ninja \
@@ -1181,7 +1209,7 @@ jobs:
             -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod \
             -DGGML_OPENMP=OFF \
             -DGGML_CUDA=OFF \
-            -DGGML_VULKAN=OFF
+            -DGGML_VULKAN=ON
 
       - name: Build
         working-directory: ggml-src
@@ -1212,7 +1240,7 @@ jobs:
           # Linux-style symlink chain.
           find ggml-src/build-android -name 'libggml*.so*' -exec cp -Lf {} "$out/" \;
 
-          for name in libggml.so libggml-base.so libggml-cpu.so; do
+          for name in libggml.so libggml-base.so libggml-cpu.so libggml-vulkan.so; do
             if [ ! -f "$out/$name" ]; then
               echo "Required GGML runtime is missing: $name" >&2
               exit 1
@@ -1227,17 +1255,19 @@ jobs:
             echo "GGML_REF: ${{ github.event.inputs.ggml_ref }}"
             echo "GGML_MAX_NAME: 128"
             echo "Android NDK: ${{ github.event.inputs.android_ndk_version }} (r28+ required)"
-            echo "Enabled backends: cpu (single variant, armv8.2-a+dotprod baseline)"
+            echo "Enabled backends: cpu (single variant, armv8.2-a+dotprod baseline), vulkan"
             echo ""
             echo "This build packages standalone ggml shared libraries for Android arm64-v8a only."
             echo "Only 64-bit real devices are in scope: no armeabi-v7a / x86 / x86_64 slices are produced, so Android emulators are excluded."
             echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=128 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
-            echo "GGML_BACKEND_DL=OFF: libggml-cpu.so is a plain shared library linked into libggml.so via DT_NEEDED, so the backend registry self-registers at load time (same runtime model as iOS) and nothing has to be scanned or dlopen'd by the app."
+            echo "GGML_BACKEND_DL=OFF: every enabled backend (libggml-cpu.so, libggml-vulkan.so) is a plain shared library linked into libggml.so via DT_NEEDED, so the backend registry self-registers at load time (same runtime model as iOS) and nothing has to be scanned or dlopen'd by the app."
             echo "CPU targets the armv8.2-a+dotprod baseline (Cortex-A75 class and newer), the same CPU floor the iOS build uses (M1 baseline)."
-            echo "CUDA, Vulkan and OpenMP do not exist on the Android target and are explicitly disabled."
+            echo "CUDA and OpenMP do not exist on the Android target and are explicitly disabled."
+            echo "Vulkan is enabled: its shaders are compiled to SPIR-V at build time and libggml.so NEEDs libggml-vulkan.so, so the Android linker loads the Vulkan backend together with the core runtime; the Vulkan device registers alongside the CPU device on devices whose driver supports it."
             echo "The NDK links 16 KB page-size aligned libraries by default; every shipped .so is re-checked below (Play requirement)."
             echo ""
-            echo "The ggml core libraries (libggml.so, libggml-base.so, libggml-cpu.so) are also produced by the llama.cpp / stable-diffusion / qwentts Android builds from the same ggml ref; ship exactly ONE copy of them inside the APK and let libllama.so / libstable-diffusion.so / libqwen.so resolve it via DT_NEEDED."
+            echo "The ggml core libraries (libggml.so, libggml-base.so, libggml-cpu.so, libggml-vulkan.so) are also produced by the llama.cpp / stable-diffusion / qwentts Android builds from the same ggml ref; ship exactly ONE copy of them inside the APK and let libllama.so / libstable-diffusion.so / libqwen.so resolve it via DT_NEEDED."
+            echo "The four libraries travel as a set: whichever libggml.so copy lands in the APK must carry the DT_NEEDED entries for libggml-cpu.so and libggml-vulkan.so, with both backend .so files shipped next to it."
             echo ""
             echo "Artifact contents:"
             (cd "$out" && ls -1 | sort)
@@ -1289,6 +1319,35 @@ jobs:
 
           echo ""
           echo "All .so files are 16 KB page-size aligned."
+
+      # GGML_BACKEND_DL=OFF promises that the app never has to scan or dlopen
+      # backend modules: the Android linker pulls libggml-cpu.so /
+      # libggml-vulkan.so in as DT_NEEDED entries of libggml.so. Validate that
+      # promise on the exact files that get uploaded - a backend dropped from
+      # the link would only surface as a missing device at runtime, so the
+      # build fails here instead.
+      - name: Verify backend DT_NEEDED wiring
+        run: |
+          set -euo pipefail
+
+          out="out/runtimes/${RID}/native/multi-backend"
+          READELF="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+
+          needed="$("${READELF}" -d "$out/libggml.so" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort)"
+          printf 'libggml.so NEEDED entries:\n%s\n' "${needed}"
+
+          for dep in libggml-cpu.so libggml-vulkan.so; do
+            if ! grep -qx "${dep}" <<< "${needed}"; then
+              echo "libggml.so does not NEED ${dep}; the backend was not linked into the core runtime." >&2
+              exit 1
+            fi
+          done
+
+          {
+            echo ""
+            echo "libggml.so DT_NEEDED (backend wiring, verified after the build):"
+            printf '%s\n' "${needed}"
+          } >> "$out/README.txt"
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
