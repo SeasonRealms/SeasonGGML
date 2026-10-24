@@ -9,6 +9,7 @@ public static class GGML
     private static readonly object s_loadLock = new();
     private static readonly object s_resolverLock = new();
     private static readonly Dictionary<string, IntPtr> s_nativeHandles = new(StringComparer.Ordinal);
+    private static readonly Lazy<bool> s_metalSupported = new(ProbeMetalSupported);
     private static bool s_backendsLoaded;
     private static bool s_resolverRegistered;
 
@@ -88,6 +89,31 @@ public static class GGML
         }
     }
 
+    /// <summary>
+    /// Whether ggml's Metal backend can run on this machine. Its kernels rely on
+    /// simdgroup matrix multiplication, which Metal only exposes from the Apple7 GPU
+    /// family (A14/M1) onward; on older GPUs (A12/A13 phones) the Metal device fails
+    /// to initialise and the model load fails before the first token is generated.
+    /// </summary>
+    public static bool IsMetalSupported => s_metalSupported.Value;
+
+    /// <summary>
+    /// Whether a backend descriptor or device name refers to the Metal backend.
+    /// ggml registers the device as "MTL0" (registry "MTL"); "metal" is accepted
+    /// for symmetry with the older naming used by some wrappers.
+    /// </summary>
+    public static bool IsMetalBackend(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        var trimmed = name.Trim();
+        return trimmed.StartsWith("MTL", StringComparison.OrdinalIgnoreCase) ||
+               trimmed.StartsWith("metal", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static GgmlBackendSelection? CreateBackendSelection(string? backend, string? paramsBackend)
     {
         EnsureSupported();
@@ -109,15 +135,33 @@ public static class GGML
             throw new InvalidOperationException("No ggml backend devices are available.");
         }
 
+        // ggml's Metal kernels need the Apple7 GPU family. When the GPU cannot run
+        // them - or the Metal device failed to initialise and never reached the
+        // registry - keep the selection usable by running on the CPU device instead.
+        var metalSupported = IsMetalSupported;
+        var metalFellBack = false;
+
         var resolved = new List<(IntPtr Handle, string Name)>(descriptors.Length);
         foreach (var descriptor in descriptors)
         {
             var device = ResolveDevice(descriptor, available);
             if (device.Handle == IntPtr.Zero)
             {
+                if (IsMetalBackend(descriptor))
+                {
+                    metalFellBack = true;
+                    continue;
+                }
+
                 var availableNames = string.Join(", ", available.Select(static d => d.Name));
                 throw new InvalidOperationException(
                     $"The backend '{descriptor}' is not available. Available backends: {availableNames}.");
+            }
+
+            if (!metalSupported && IsMetalBackend(device.Name))
+            {
+                metalFellBack = true;
+                continue;
             }
 
             if (resolved.Any(existing => existing.Handle == device.Handle))
@@ -126,6 +170,22 @@ public static class GGML
             }
 
             resolved.Add((device.Handle, device.Name));
+        }
+
+        if (metalFellBack)
+        {
+            // A Metal-only selection would otherwise leave llama.cpp with no device
+            // at all; make sure the CPU backend is part of the fallback.
+            var cpu = ResolveDevice("cpu", available);
+            if (cpu.Handle != IntPtr.Zero && !resolved.Any(existing => existing.Handle == cpu.Handle))
+            {
+                resolved.Add((cpu.Handle, cpu.Name));
+            }
+
+            System.Diagnostics.Debug.WriteLine(
+                metalSupported
+                    ? "[SeasonGGML] The Metal backend failed to initialise; falling back to the CPU backend."
+                    : "[SeasonGGML] Metal requires the Apple7 GPU family (A14/M1); falling back to the CPU backend.");
         }
 
         var pointers = new IntPtr[resolved.Count + 1];
@@ -714,6 +774,25 @@ public static class GGML
         }
 
         return trimmed.Length == 0 ? null : trimmed;
+    }
+
+    private static bool ProbeMetalSupported()
+    {
+#if IOS || MACCATALYST
+        try
+        {
+            var device = Metal.MTLDevice.SystemDefault;
+            return device is not null && device.SupportsFamily(Metal.MTLGpuFamily.Apple7);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"[SeasonGGML] Metal capability probe failed: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+#else
+        return false;
+#endif
     }
 
     private static int ExtractTrailingNumber(string name)
