@@ -12,9 +12,20 @@ on:
           - Release
           - Debug
       ggml_ref:
-        description: "SeasonRealms/ggml tag / branch / commit"
+        description: "SeasonRealms/ggml tag / branch / commit (must equal SeasonThreeD's build)"
         required: true
-        default: "master"
+        # SeasonRealms/ggml's season branch, tagged: ggml-org/ggml 0.27.0 plus the four
+        # patches the 3D pipeline's results depend on - fastdiv UB above 2^31 (dense
+        # res-1024 scenes take a GPU page fault without it) and GGML_PREC_F32 honoured in
+        # the TILE / VEC / MMA FlashAttention kernels (the FA bias drifts 13x on NVIDIA
+        # MMA and ~120 sigma on AMD TILE without them), plus the GGML_FA_DEBUG dispatch
+        # line that makes a lane's kernel choice visible in the log.
+        #
+        # Deliberately not "master": a bare mirror compiles and links but hands back a
+        # different latent, and SeasonThreeD's workers are built from this very tag -
+        # ggml.dll, ggml-cpu-*.dll, ggml-cuda.dll and ggml-vulkan.dll all pass ggml_tensor
+        # and backend vtables across the package boundary, so the two must not skew.
+        default: "season-0.27.0-trellis1"
       cuda_version:
         description: "CUDA Toolkit version for the Windows and Linux builds"
         required: false
