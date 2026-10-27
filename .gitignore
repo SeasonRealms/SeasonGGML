@@ -60,3 +60,4 @@ nunit-*.xml
 /.vs
 /Apps/Engine/Engine.csproj.user
 runtimes/
+/native/upstream-ggml
