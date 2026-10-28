@@ -12,20 +12,22 @@ on:
           - Release
           - Debug
       ggml_ref:
-        description: "SeasonRealms/ggml tag / branch / commit (must equal SeasonThreeD's build)"
+        description: "SeasonRealms/ggml tag / branch / commit (must resolve to the ref the other packages build)"
         required: true
-        # SeasonRealms/ggml's season branch, tagged: ggml-org/ggml 0.27.0 plus the four
-        # patches the 3D pipeline's results depend on - fastdiv UB above 2^31 (dense
-        # res-1024 scenes take a GPU page fault without it) and GGML_PREC_F32 honoured in
-        # the TILE / VEC / MMA FlashAttention kernels (the FA bias drifts 13x on NVIDIA
-        # MMA and ~120 sigma on AMD TILE without them), plus the GGML_FA_DEBUG dispatch
-        # line that makes a lane's kernel choice visible in the log.
+        # SeasonRealms/ggml master: ggml-org/ggml 0.27.0 plus the patches the 3D
+        # pipeline's results depend on - fastdiv UB above 2^31 (dense res-1024 scenes
+        # take a GPU page fault without it) and GGML_PREC_F32 honoured in the TILE /
+        # VEC / MMA FlashAttention kernels (the FA bias drifts 13x on NVIDIA MMA and
+        # ~120 sigma on AMD TILE without them), plus the GGML_FA_DEBUG dispatch line
+        # that makes a lane's kernel choice visible in the log.
         #
-        # Deliberately not "master": a bare mirror compiles and links but hands back a
-        # different latent, and SeasonThreeD's workers are built from this very tag -
-        # ggml.dll, ggml-cpu-*.dll, ggml-cuda.dll and ggml-vulkan.dll all pass ggml_tensor
-        # and backend vtables across the package boundary, so the two must not skew.
-        default: "season-0.27.0-trellis1"
+        # No tag any more: master is the ref every package builds from, and this
+        # workflow is no longer the only source of the ggml runtime - SeasonThreeD,
+        # SeasonLLM, SeasonImage and SeasonTTS compile the same tree and ship the same
+        # ggml*.dll, so a package built here and one built there are interchangeable.
+        # The commit a run resolved is recorded in the artifact manifest, which is what
+        # reproduces it; pass a commit here to freeze one anyway.
+        default: "master"
       cuda_version:
         description: "CUDA Toolkit version for the Windows and Linux builds"
         required: false
@@ -380,6 +382,12 @@ jobs:
             Write-Warning "$Name DLLs were not found in the provided archive: $archiveName"
           }
 
+          # The CUDA runtime is collected here and nowhere else. This artifact is the
+          # download source for cudacudnn-runtime (which has no workflow of its own),
+          # so a new machine can be staged from it; the AI packages that consume it -
+          # llama.cpp, stable-diffusion, qwentts and SeasonThreeD - compile against
+          # these DLLs and then strip them back out of their own artifacts, because a
+          # copy next to every package was several hundred MB of duplicate download.
           Ensure-ComponentDlls -Name "cudart" -Patterns @("cudart64_*.dll", "cudart*.dll") -RedistComponent "cuda_cudart" -Required $true
           Ensure-ComponentDlls -Name "cublas" -Patterns @("cublas64_*.dll", "cublas*.dll", "cublasLt64_*.dll", "cublasLt*.dll") -RedistComponent "libcublas" -Required $true
           Ensure-ComponentDlls -Name "cufft" -Patterns @("cufft64_*.dll", "cufft*.dll") -RedistComponent "libcufft" -Required $false
