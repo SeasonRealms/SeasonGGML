@@ -21,12 +21,14 @@ on:
         # ~120 sigma on AMD TILE without them), plus the GGML_FA_DEBUG dispatch line
         # that makes a lane's kernel choice visible in the log.
         #
-        # No tag any more: master is the ref every package builds from, and this
-        # workflow is no longer the only source of the ggml runtime - SeasonThreeD,
-        # SeasonLLM, SeasonImage and SeasonTTS compile the same tree and ship the same
-        # ggml*.dll, so a package built here and one built there are interchangeable.
-        # The commit a run resolved is recorded in the artifact manifest, which is what
-        # reproduces it; pass a commit here to freeze one anyway.
+        # No tag any more: master is the ref every package builds from. This workflow is
+        # the ONLY download source for the ggml runtime: SeasonThreeD, SeasonLLM,
+        # SeasonImage and SeasonTTS compile the same tree only to link against it and
+        # strip the resulting ggml*.dll / libggml*.so from their own artifacts, so the
+        # ggml-<rid>-multi-backend-* artifacts published here are the one copy an
+        # application stages next to them. The commit a run resolved is recorded in the
+        # artifact manifest, which is what reproduces it; pass a commit here to freeze
+        # one anyway.
         default: "master"
       cuda_version:
         description: "CUDA Toolkit version for the Windows and Linux builds"
@@ -1260,7 +1262,7 @@ jobs:
             echo "CUDA, Vulkan and OpenMP do not exist on the Android target and are explicitly disabled."
             echo "The NDK links 16 KB page-size aligned libraries by default; every shipped .so is re-checked below (Play requirement)."
             echo ""
-            echo "The ggml core libraries (libggml.so, libggml-base.so, libggml-cpu.so) are also produced by the llama.cpp / stable-diffusion / qwentts Android builds from the same ggml ref; ship exactly ONE copy of them inside the APK and let libllama.so / libstable-diffusion.so / libqwen.so resolve it via DT_NEEDED."
+            echo "The ggml core libraries (libggml.so, libggml-base.so, libggml-cpu.so) are published by this artifact ONLY: the llama.cpp / stable-diffusion / qwentts Android builds compile the same ggml ref but strip these libraries from their own artifacts. Ship exactly ONE copy of them inside the APK - the one from this artifact - and let libllama.so / libstable-diffusion.so / libqwen.so resolve it via DT_NEEDED."
             echo ""
             echo "Artifact contents:"
             (cd "$out" && ls -1 | sort)
