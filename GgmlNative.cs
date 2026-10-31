@@ -24,6 +24,12 @@ internal static class GgmlNative
         public byte HostBuffer;
         public byte BufferFromHostPtr;
         public byte Events;
+
+        // ggml 0.27 added mmap_support after the four 0.15-era fields. Leaving it out
+        // still happened to fit - the 5th byte landed in the struct's tail padding - but
+        // that is luck, not a contract: keep the layout exact so the next added field
+        // fails at the field that moved instead of corrupting a neighbour.
+        public byte MmapSupport;
     }
 
     [StructLayout(LayoutKind.Sequential)]

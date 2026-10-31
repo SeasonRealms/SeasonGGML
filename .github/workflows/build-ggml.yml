@@ -134,11 +134,11 @@ jobs:
             '-DCMAKE_C_COMPILER=cl.exe',
             '-DCMAKE_CXX_COMPILER=cl.exe',
             "-DCMAKE_BUILD_TYPE=${{ github.event.inputs.configuration }}",
-            '-DCMAKE_CXX_FLAGS=/bigobj /DGGML_MAX_NAME=128',
+            '-DCMAKE_CXX_FLAGS=/bigobj /DGGML_MAX_NAME=160',
             '-DBUILD_SHARED_LIBS=ON',
             '-DGGML_BUILD_TESTS=OFF',
             '-DGGML_BUILD_EXAMPLES=OFF',
-            '-DCMAKE_C_FLAGS=/DGGML_MAX_NAME=128',
+            '-DCMAKE_C_FLAGS=/DGGML_MAX_NAME=160',
             '-DGGML_BACKEND_DL=ON',
             '-DGGML_NATIVE=OFF',
             '-DGGML_CPU_ALL_VARIANTS=ON',
@@ -149,7 +149,7 @@ jobs:
             # CUDA compiler test dies with "A single input file is required for a non-link
             # phase when an outputfile is specified". -Xcudafe uses '=' so the flag string
             # carries no embedded quotes.
-            '-DCMAKE_CUDA_FLAGS=-Xcudafe=--diag_suppress=177 -Xcudafe=--diag_suppress=550 -DGGML_MAX_NAME=128',
+            '-DCMAKE_CUDA_FLAGS=-Xcudafe=--diag_suppress=177 -Xcudafe=--diag_suppress=550 -DGGML_MAX_NAME=160',
             '-DCMAKE_CUDA_ARCHITECTURES=${{ github.event.inputs.cuda_architectures }}'
           )
 
@@ -407,11 +407,11 @@ jobs:
             "GGML_REF: ${{ github.event.inputs.ggml_ref }}",
             "Configuration: ${{ github.event.inputs.configuration }}",
             "CUDA Toolkit version: ${{ github.event.inputs.cuda_version }}",
-            "GGML_MAX_NAME: 128",
+            "GGML_MAX_NAME: 160",
             "Enabled backends: cpu-all-variants, cuda12, vulkan",
             "",
             "This build packages standalone ggml shared libraries for win-x64.",
-            "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=128 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats.",
+            "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=160 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats.",
             "CPU uses GGML_CPU_ALL_VARIANTS with GGML_BACKEND_DL so one runtime can expose multiple x86 CPU variants and let ggml choose the best supported backend at runtime.",
             "",
             "CPU backend DLLs:"
@@ -478,8 +478,8 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE="${{ github.event.inputs.configuration }}" \
-            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=128" \
-            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=160" \
+            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=160" \
             -DBUILD_SHARED_LIBS=ON \
             -DGGML_BUILD_TESTS=OFF \
             -DGGML_BUILD_EXAMPLES=OFF \
@@ -489,7 +489,7 @@ jobs:
             -DGGML_CUDA=ON \
             -DGGML_VULKAN=ON \
             -DGGML_CUDA_CUB_3DOT2=ON \
-            -DCMAKE_CUDA_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_CUDA_FLAGS="-DGGML_MAX_NAME=160" \
             -DCMAKE_CUDA_ARCHITECTURES="${{ github.event.inputs.cuda_architectures }}"
 
       - name: Build
@@ -537,11 +537,11 @@ jobs:
             echo "GGML_REF: ${{ github.event.inputs.ggml_ref }}"
             echo "Configuration: ${{ github.event.inputs.configuration }}"
             echo "CUDA Toolkit version (build time only): ${{ github.event.inputs.cuda_version }}"
-            echo "GGML_MAX_NAME: 128"
+            echo "GGML_MAX_NAME: 160"
             echo "Enabled backends: cpu-all-variants, cuda12, vulkan"
             echo ""
             echo "This build packages standalone ggml shared libraries for linux-x64."
-            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=128 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
+            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=160 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
             echo "CPU uses GGML_CPU_ALL_VARIANTS with GGML_BACKEND_DL so one runtime can expose multiple x86 CPU variants and let ggml choose the best supported backend at runtime."
             echo ""
             echo "CUDA and cuDNN runtimes are NOT bundled: install CUDA 12.x system-wide for the CUDA backend."
@@ -634,10 +634,10 @@ jobs:
             -DCMAKE_OSX_SYSROOT="${SDK_PATH}" \
             -DCMAKE_OSX_ARCHITECTURES="${ARCH}" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET= \
-            -DCMAKE_C_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=128" \
-            -DCMAKE_CXX_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=128" \
-            -DCMAKE_OBJC_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=128" \
-            -DCMAKE_OBJCXX_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=128" \
+            -DCMAKE_C_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=160" \
+            -DCMAKE_CXX_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=160" \
+            -DCMAKE_OBJC_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=160" \
+            -DCMAKE_OBJCXX_FLAGS="${CAT_FLAGS} -DGGML_MAX_NAME=160" \
             -DCMAKE_ASM_FLAGS="${CAT_FLAGS}" \
             -DCMAKE_EXE_LINKER_FLAGS="${LINK_FLAGS}" \
             -DCMAKE_SHARED_LINKER_FLAGS="${LINK_FLAGS}" \
@@ -783,13 +783,13 @@ jobs:
             echo "Configuration: ${{ github.event.inputs.configuration }}"
             echo "RID: ${RID}"
             echo "Target triple: ${ARCH}-apple-ios${{ github.event.inputs.maccatalyst_min_ios }}-macabi"
-            echo "GGML_MAX_NAME: 128"
+            echo "GGML_MAX_NAME: 160"
             echo "Linkage: static (BUILD_SHARED_LIBS=OFF, GGML_BACKEND_DL=OFF), merged into a single libggml.dylib"
             echo "Enabled backends: cpu (armv8.2-a+dotprod), metal, blas=${{ github.event.inputs.maccatalyst_blas }}"
             echo ""
             echo "This build packages a single self-contained ggml runtime for ${RID}."
             echo "Apple Silicon only: no x86_64 slice is produced, so this runtime does not load on Intel Macs. Add a maccatalyst-x64 build if Intel support is needed again."
-            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=128 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
+            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=160 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
             echo "Static linkage: every backend is archived into libggml.dylib and registered at runtime by ggml's backend registry; nothing is dlopen'd, so the app bundle contains a single Mach-O to sign."
             echo "CPU targets the M1 baseline (armv8.2-a+dotprod). GGML_CPU_ALL_VARIANTS is intentionally NOT used because it requires GGML_BACKEND_DL; M1 and every later Apple Silicon chip run this baseline."
             echo "Metal uses GGML_METAL_EMBED_LIBRARY so the shader source travels inside libggml.dylib; no default.metallib has to be deployed or located in the app bundle."
@@ -865,17 +865,17 @@ jobs:
           # *-macabi build above, for which CMake has no system name to switch on).
           # The behavioral flags mirror the Mac Catalyst job: one static, registry-
           # driven runtime with CPU (M1 baseline), Metal and optional Accelerate BLAS,
-          # plus the same GGML_MAX_NAME=128 override.
+          # plus the same GGML_MAX_NAME=160 override.
           cmake -S . -B build-ios-device -G Ninja \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphoneos \
             -DCMAKE_OSX_ARCHITECTURES="${ARCH}" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="${MIN_IOS}" \
             -DCMAKE_BUILD_TYPE="${{ github.event.inputs.configuration }}" \
-            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=128" \
-            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=128" \
-            -DCMAKE_OBJC_FLAGS="-DGGML_MAX_NAME=128" \
-            -DCMAKE_OBJCXX_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=160" \
+            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=160" \
+            -DCMAKE_OBJC_FLAGS="-DGGML_MAX_NAME=160" \
+            -DCMAKE_OBJCXX_FLAGS="-DGGML_MAX_NAME=160" \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_BUILD_TESTS=OFF \
             -DGGML_BUILD_EXAMPLES=OFF \
@@ -909,10 +909,10 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES="${ARCH}" \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="${MIN_IOS}" \
             -DCMAKE_BUILD_TYPE="${{ github.event.inputs.configuration }}" \
-            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=128" \
-            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=128" \
-            -DCMAKE_OBJC_FLAGS="-DGGML_MAX_NAME=128" \
-            -DCMAKE_OBJCXX_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=160" \
+            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=160" \
+            -DCMAKE_OBJC_FLAGS="-DGGML_MAX_NAME=160" \
+            -DCMAKE_OBJCXX_FLAGS="-DGGML_MAX_NAME=160" \
             -DBUILD_SHARED_LIBS=OFF \
             -DGGML_BUILD_TESTS=OFF \
             -DGGML_BUILD_EXAMPLES=OFF \
@@ -1083,7 +1083,7 @@ jobs:
             echo "GGML_REPO: https://github.com/${{ env.GGML_REPO }}"
             echo "GGML_REF: ${{ github.event.inputs.ggml_ref }}"
             echo "Target triples: arm64-apple-ios${{ github.event.inputs.ios_deployment_target }} (device), arm64-apple-ios${{ github.event.inputs.ios_deployment_target }}-simulator (simulator)"
-            echo "GGML_MAX_NAME: 128"
+            echo "GGML_MAX_NAME: 160"
             echo "Linkage: static (BUILD_SHARED_LIBS=OFF, GGML_BACKEND_DL=OFF), merged into a single libggml.a per slice"
             echo "Enabled backends: cpu (armv8.2-a+dotprod), metal, blas=${{ github.event.inputs.ios_blas }}"
             echo ""
@@ -1092,7 +1092,7 @@ jobs:
             echo "On iOS the ggml P/Invokes are meant to bind as __Internal (unlike the libggml dylib used on Mac Catalyst), so the app statically links libggml.a via NativeReference (Kind=Static)."
             echo "Static linkage: ggml core and every backend are archived into the single libggml.a and registered at runtime by ggml's backend registry; nothing is dlopen'd."
             echo "Self-contained: a complete ggml build is merged in. If several self-contained ggml-based archives (ggml, llama, qwentts, ...) are linked into the same app, keep exactly one ForceLoad=True owner; otherwise the duplicate ggml objects clash at link time."
-            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=128 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
+            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=160 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
             echo "CPU targets the M1 baseline (armv8.2-a+dotprod), supported by every A12+ device and every Apple Silicon simulator."
             echo "Metal uses GGML_METAL_EMBED_LIBRARY so the shader source travels inside libggml.a; no default.metallib has to be deployed or located in the app bundle."
             echo "BLAS uses Apple's Accelerate framework (GGML_BLAS_VENDOR=Apple), which is available on both iOS devices and simulators."
@@ -1193,8 +1193,8 @@ jobs:
             -DANDROID_PLATFORM="android-${ANDROID_API}" \
             -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
             -DCMAKE_BUILD_TYPE="${{ github.event.inputs.configuration }}" \
-            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=128" \
-            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=128" \
+            -DCMAKE_C_FLAGS="-DGGML_MAX_NAME=160" \
+            -DCMAKE_CXX_FLAGS="-DGGML_MAX_NAME=160" \
             -DBUILD_SHARED_LIBS=ON \
             -DGGML_BUILD_TESTS=OFF \
             -DGGML_BUILD_EXAMPLES=OFF \
@@ -1248,13 +1248,13 @@ jobs:
             echo "Configuration: ${{ github.event.inputs.configuration }}"
             echo "GGML_REPO: https://github.com/${{ env.GGML_REPO }}"
             echo "GGML_REF: ${{ github.event.inputs.ggml_ref }}"
-            echo "GGML_MAX_NAME: 128"
+            echo "GGML_MAX_NAME: 160"
             echo "Android NDK: ${{ github.event.inputs.android_ndk_version }} (r28+ required)"
             echo "Enabled backends: cpu (single variant, armv8.2-a+dotprod baseline)"
             echo ""
             echo "This build packages standalone ggml shared libraries for Android arm64-v8a only."
             echo "Only 64-bit real devices are in scope: no armeabi-v7a / x86 / x86_64 slices are produced, so Android emulators are excluded."
-            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=128 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
+            echo "This build overrides the default GGML_MAX_NAME=64 and compiles all ggml targets with GGML_MAX_NAME=160 for compatibility with longer tensor names used by stable-diffusion.cpp and related model formats."
             echo "GGML_BACKEND_DL=OFF: libggml-cpu.so is a plain shared library linked into libggml.so via DT_NEEDED, so the backend registry self-registers at load time (same runtime model as iOS) and nothing has to be scanned or dlopen'd by the app."
             echo "CPU targets the armv8.2-a+dotprod baseline (Cortex-A75 class and newer), the same CPU floor the iOS build uses (M1 baseline)."
             echo "CUDA, Vulkan and OpenMP do not exist on the Android target and are explicitly disabled."

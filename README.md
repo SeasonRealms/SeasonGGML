@@ -16,7 +16,17 @@ https://github.com/SeasonRealms/SeasonGGML
   Mac — or under Rosetta — `GGML.IsSupported` reports `false` and the API throws
   `PlatformNotSupportedException`.
 - Windows keeps the dynamic multi-backend layout (`ggml.dll`, `ggml-base.dll`,
-  `ggml-cpu-*.dll`, `ggml-cuda.dll`, `ggml-vulkan.dll`); it is unchanged.
+  `ggml-cpu-*.dll`, `ggml-cuda.dll`, `ggml-vulkan.dll`). The payload is built from
+  SeasonRealms/ggml `master` (the 0.27 line) with `GGML_BACKEND_DL=ON`,
+  `GGML_CPU_ALL_VARIANTS=ON`, `GGML_MAX_NAME=160` and CUDA 12.8.1, and it is the
+  **single** ggml runtime in the product: SeasonImage, SeasonTTS, SeasonLLM and the
+  out-of-process trellis worker all bind to this one copy, so nothing else may ship
+  a second one. `GGML_MAX_NAME` is 160 because stable-diffusion.cpp requires at
+  least that (`static_assert` in `ggml_extend.h`) and every consumer of this payload
+  must compile the shared `ggml_tensor` layout with the same value. Anything
+  compiled against a pre-0.27 ggml (which had
+  `ggml_graph_compute[_with_ctx]` / `ggml_set_f32` and a four-field
+  `ggml_backend_dev_caps`) is not loadable against it.
 
 ## Backend Enumeration
 
@@ -119,7 +129,8 @@ The result:
 - `CMAKE_SYSTEM_NAME` stays unset (keeps `APPLE=ON` so the Apple ARM branch is taken) and
   `CMAKE_OSX_DEPLOYMENT_TARGET` stays empty; Catalyst is expressed purely as the clang
   target triple `arm64-apple-ios<ver>-macabi`.
-- All targets are compiled with `-DGGML_MAX_NAME=128`.
+- All targets are compiled with `-DGGML_MAX_NAME=160` (stable-diffusion.cpp's
+  `ggml_extend.h` static_asserts `GGML_MAX_NAME >= 160`, so the whole fleet builds at 160).
 
 ### Downstream notes (consumers)
 
