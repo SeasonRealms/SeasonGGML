@@ -14,12 +14,15 @@ on:
       ggml_ref:
         description: "SeasonRealms/ggml tag / branch / commit (must resolve to the ref the other packages build)"
         required: true
-        # SeasonRealms/ggml master: ggml-org/ggml 0.27.0 plus the patches the 3D
+        # SeasonRealms/ggml master: ggml-org/ggml 0.28.0 plus the patches the 3D
         # pipeline's results depend on - fastdiv UB above 2^31 (dense res-1024 scenes
         # take a GPU page fault without it) and GGML_PREC_F32 honoured in the TILE /
         # VEC / MMA FlashAttention kernels (the FA bias drifts 13x on NVIDIA MMA and
         # ~120 sigma on AMD TILE without them), plus the GGML_FA_DEBUG dispatch line
-        # that makes a lane's kernel choice visible in the log.
+        # that makes a lane's kernel choice visible in the log. 0.28.0 is also the
+        # first ggml that carries ggml_top_k_mask, which llama.cpp's qwen4exp and
+        # glm5-next graphs construct: a 0.27 tree stops the SeasonLLM build with
+        # C3861 at src/models/qwen4exp.cpp, so this pin cannot move without llama's.
         #
         # No tag any more: master is the ref every package builds from. This workflow is
         # the ONLY download source for the ggml runtime: SeasonThreeD, SeasonLLM,
